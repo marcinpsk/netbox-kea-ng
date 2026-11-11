@@ -61,10 +61,12 @@ SPDX-License-Identifier: Apache-2.0
   *NetBox* link to an object that you may view. The table export writes the state in the NetBox IP column
   (*Synchronized*, *Not Synchronized*, *Unmarked*, *Not in NetBox* or *Unknown*), and nothing for a lease that
   is not current.
-- The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
+- The `lease_added`, `lease_updated` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
   back observed, or `None` when that read failed or does not match the request. A CSV import sends
   `lease_added` for each row that Kea created, with `lease` `None`, because it reads nothing back.
+  `lease_updated` sends `before`, the lease that the read before the edit observed, and `edit`, the
+  fields that the edit wrote. A Lease add, edit and delete each write a journal entry on the server.
   `leases_deleted` sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or
   failed action sends no signal. Wiping the leases of a Subnet sends no signal, because Kea does
   not report which leases it removed.

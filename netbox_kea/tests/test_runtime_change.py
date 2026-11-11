@@ -25,7 +25,7 @@ from netbox_kea import runtime_change
 from netbox_kea.change_outcome import ChangeRejected
 from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, shown_lease
 from netbox_kea.models import Server
-from netbox_kea.runtime_change import LeaseDeleteOutcome, RuntimeChangeOutcome
+from netbox_kea.runtime_change import LeaseChangeOutcome, RuntimeChangeOutcome
 
 from .kea_stub import (
     LeaseDaemon,
@@ -345,7 +345,7 @@ class LeaseTargetTests(TestCase):
         with stub_kea(daemon.responses()) as kea:
             outcome = runtime_change.edit_lease(self.server, 6, shown, _RENAME)
 
-        self.assertEqual(outcome, RuntimeChangeOutcome("applied"))
+        self.assertEqual(outcome, LeaseChangeOutcome("applied", lease=typed_lease(_PREFIX)))
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
         self.assertEqual(
             kea.bodies("lease6-get")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
@@ -361,7 +361,7 @@ class LeaseTargetTests(TestCase):
         with stub_kea(daemon.responses()) as kea:
             outcome = runtime_change.delete_lease(self.server, 6, shown)
 
-        self.assertEqual(outcome, LeaseDeleteOutcome("applied", lease=typed_lease(_PREFIX)))
+        self.assertEqual(outcome, LeaseChangeOutcome("applied", lease=typed_lease(_PREFIX)))
         self.assertEqual(
             kea.bodies("lease6-del")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
         )

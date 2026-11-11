@@ -4,7 +4,7 @@
 
 External consumers can connect to these signals to react to DHCP changes::
 
-    from netbox_kea.signals import lease_added, leases_deleted
+    from netbox_kea.signals import lease_added, lease_updated, leases_deleted
 
     def on_lease_added(sender, server, creation, lease, dhcp_version, request, **kwargs):
         # your logic here
@@ -31,6 +31,12 @@ lease_added
     binding, Subnet or hostname differs from the request; a CSV import reads nothing back and
     always sends ``None``), ``dhcp_version``, ``request``
 
+lease_updated
+    Fired when Kea confirms the edit of one lease in the plugin UI.
+    kwargs: ``server``, ``before`` (the ``Lease`` that the fresh read before the edit observed),
+    ``edit`` (the ``LeaseEdit``: each field that is not ``None`` was written, and an empty hostname
+    cleared it), ``dhcp_version``, ``request``
+
 leases_deleted
     Fired when Kea confirms the deletion of one or more leases selected in the plugin UI.
     kwargs: ``server``, ``leases`` (a tuple of the ``Lease`` values that the fresh read before
@@ -54,7 +60,7 @@ reservation_deleted
     kwargs: ``server``, ``before`` (Reservation), ``after`` (None),
     ``dhcp_version``, ``request``
 
-The ``creation``, ``lease``, ``leases``, ``before`` and ``after`` values use the immutable typed
+The ``creation``, ``lease``, ``leases``, ``edit``, ``before`` and ``after`` values use the immutable typed
 Lease and Reservation domains (``netbox_kea.leases`` and ``netbox_kea.reservations``). They do not
 depend on the route or Kea's raw response shape.
 """
@@ -62,6 +68,7 @@ depend on the route or Kea's raw response shape.
 from django.dispatch import Signal
 
 lease_added = Signal()
+lease_updated = Signal()
 leases_deleted = Signal()
 reservation_created = Signal()
 reservation_updated = Signal()

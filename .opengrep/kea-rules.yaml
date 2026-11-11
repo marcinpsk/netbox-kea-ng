@@ -11,8 +11,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Give row action return URLs the current request path as their fallback.
-      An empty fallback loses the list query after a mutation or cancellation.
+      A row's `return_url` is assigned from `_safe_return_url()` with an empty fallback. Give row action
+      return URLs the current request path as their fallback. An empty fallback loses the list query after a
+      mutation or cancellation. Limit: the rule checks this direct assignment only; it does not follow aliases
+      or intermediate values.
     paths:
       exclude:
         - "**/tests/**"
@@ -22,8 +24,9 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Use isinstance with QuerySet to distinguish a queryset from a model instance.
-      A model instance can also have a model attribute.
+      A `model` attribute check distinguishes a queryset from a model instance. Use `isinstance()` with
+      `QuerySet`. A model instance can also have a `model` attribute, because a model field can use the same
+      name.
     paths:
       exclude:
         - "**/tests/**"
@@ -36,9 +39,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Send config-test and config-write through _one_command(), and config-set through
-      _config_mutation_command(), so each phase requires one well-formed reply before
-      accepting a result code.
+      A direct config-test, config-set or config-write call bypasses the single-reply validation. Send
+      config-test and config-write through `_one_command()`, and config-set through
+      `_config_mutation_command()`, so each phase requires one well-formed reply before it accepts a result
+      code.
     paths:
       exclude:
         - "**/tests/**"
@@ -56,9 +60,12 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      The IPAM and MAC sync must report the name that Kea publishes. Pass a lease
-      hostname through lease_published_name() and a Reservation through
-      reservation_published_name() in netbox_kea/published_name.py.
+      A `.hostname` of a lease, Reservation or record is passed as a call argument or in a `(hardware,
+      hostname)` pair, and not to `lease_published_name()`. The IPAM and MAC sync must report the name that
+      Kea publishes, so both sources agree. Pass a lease hostname through `lease_published_name()` and a
+      Reservation through `reservation_published_name()` in `netbox_kea/published_name.py`. Limits: the rule
+      matches receiver names that end in `lease`, `reservation` or `record`, and it does not follow a hostname
+      through a local variable.
     metadata:
       category: correctness
       confidence: HIGH
@@ -83,11 +90,9 @@ rules:
     languages: [python]
     severity: WARNING
     message: >-
-      Pass an explicit DHCP version to server.get_client(version=...) when the
-      version is known. On dual-URL servers, omitting version= can hit the wrong
-      daemon endpoint. If the call is deliberately version-agnostic (e.g. the
-      Control Agent status check), suppress it on that line with
-      `# nosemgrep: kea-get-client-missing-version`.
+      Pass an explicit DHCP version to `server.get_client(version=...)` when the version is known. On dual-URL
+      servers, a call without `version=` can reach the wrong daemon. A call that is deliberately
+      version-agnostic passes `version=None`.
     metadata:
       category: correctness
       confidence: HIGH
@@ -104,16 +109,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      A Kea client holds a requests.Session, so it lives for one operation (#239). Build it as the item of a
+      A Kea client holds a `requests.Session`, so it lives for one operation (#239). Build it as the item of a
       `with` (`with server.get_client(version=family) as client:`), or through a holder that closes it:
-      `change_outcome.build_client()` in a `with`, `views/_base.LazyClient`, `lease_reservation_reads.WorkerClients`,
-      or the context managers `views/_base._client_or_refusal()` and `subnet_catalogue._catalogue_client()`.
-      A lambda that `attempt()` runs becomes a local function with the `with` block. A `build_client()` call must
-      also be the item of a `with`.
+      `change_outcome.build_client()` in a `with`, `views/_base.LazyClient`,
+      `lease_reservation_reads.WorkerClients`, or the context managers `views/_base._client_or_refusal()` and
+      `subnet_catalogue._catalogue_client()`. A lambda that `attempt()` runs becomes a local function with the
+      `with` block. A `build_client()` call (bare or as a module attribute) must also be the item of a `with`.
       Limits: the holders are exempt by name, and the rule does not check how a caller uses `LazyClient`,
-      `WorkerClients` or a context manager holder; a second call with the same receiver (or, for `build_client()`,
-      the same arguments) inside the block of such a `with` is not seen; a reference that is not called, such as
-      `partial(server.get_client)`, is not seen.
+      `WorkerClients` or a context manager holder; a second call with the same receiver (or, for
+      `build_client()`, the same arguments) inside the block of such a `with` is not seen; a reference that is
+      not called, such as `partial(server.get_client)`, is not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -169,10 +174,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not leak exception details to user-facing responses or a job log. str(exc) or an
-      f-string interpolating a caught exception can expose internal URLs, TLS
-      details, or Kea API config. Log server-side with logger.exception() and
-      return a generic message (or kea_error_message(), which shows Kea's own reply text).
+      Do not leak exception details to user-facing responses or a job log. `str(exc)` or an f-string that
+      interpolates a caught exception, in `messages.*`, an HTTP or DRF response or the `self.logger` job log
+      of a JobRunner, can expose internal URLs, TLS details or the Kea API configuration. Log server-side with
+      `logger.exception()` and return a generic message (or `kea_error_message()`, which shows the reply text
+      of Kea). In a job log, log `type(exc).__name__`.
     metadata:
       category: security
       confidence: HIGH
@@ -217,11 +223,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not index a Kea command result directly (client.command(...)[0]).
-      command() only guarantees a list; an empty or malformed payload makes
-      [0] raise IndexError/TypeError. Assign the result and validate its shape
-      (non-empty list with a dict first entry) before indexing — see
-      _require_first_entry() in views/combined.py.
+      Do not index a Kea command result directly (`client.command(...)[0]`). `command()` only guarantees a
+      list; an empty or malformed payload makes `[0]` raise `IndexError` or `TypeError`. Assign the result and
+      validate its shape before you index it: `_one_reply()` in `netbox_kea/kea.py` requires one dict reply
+      with an int result.
     metadata:
       category: correctness
       confidence: HIGH
@@ -238,11 +243,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Only netbox_kea/kea.py may send a reservation-* command. Its results are raw
-      Kea Reservation records, whose keys only netbox_kea/reservations.py knows how
-      to read. Every other module consumes the typed Reservation, ReservationIdentity
-      and ReservationScope values those two build, so raw Reservation keys cannot
-      spread back out of the private adapters.
+      Only `netbox_kea/kea.py` may send a `reservation-*` command. Its results are raw Kea Reservation
+      records, whose keys only `netbox_kea/reservations.py` knows how to read. Every other module consumes the
+      typed `Reservation`, `ReservationIdentity` and `ReservationScope` values those two build, so raw
+      Reservation keys cannot spread back out of the private adapters.
     metadata:
       category: correctness
       confidence: HIGH
@@ -265,12 +269,12 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Send a Runtime Change through runtime_change, not through a KeaClient write
-      primitive. runtime_change reads the shown Lease before the write, classifies the
-      reply as applied, unknown or a rejection, and never reads Kea after the send
-      (ADR 0011). A direct call reads a lost reply as a failure, although Kea can have
-      applied the change. The rule matches the method name, so it cannot see a call
-      through an alias.
+      A `KeaClient` runtime write primitive (`lease_add`, `lease_update`, `lease_delete`, `lease_wipe`,
+      `dhcp_enable`, `dhcp_disable`) is called outside `runtime_change.py`. Send a Runtime Change through
+      `runtime_change`. It reads the shown Lease before the write, classifies the reply as applied, unknown or
+      a rejection, and never reads Kea after the send (ADR 0011). A direct call reads a lost reply as a
+      failure, although Kea can have applied the change. Limit: the rule matches the method name, so it cannot
+      see a call through an alias.
     metadata:
       category: correctness
       confidence: HIGH
@@ -290,13 +294,13 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Send a Reservation write through config_write.add_reservation(), edit_reservation()
-      or delete_reservation(), not through a KeaClient write primitive. config_write holds
-      the advisory lock of the Kea daemon from the scope read to the end of the persist step,
-      classifies the reply as applied, unknown or a rejection, and verifies only an applied
-      change (ADR 0012). A direct call takes no lock, so a concurrent config-set can erase
-      it, and it reads a lost reply as a failure. The rule matches the method name, so it
-      cannot see a call through an alias.
+      A `KeaClient` Reservation write primitive (`reservation_add`, `reservation_update`, `reservation_del`)
+      is called outside `config_write.py`. Send a Reservation write through `config_write.add_reservation()`,
+      `edit_reservation()` or `delete_reservation()`. `config_write` holds the advisory lock of the Kea daemon
+      from the scope read to the end of the persist step, classifies the reply as applied, unknown or a
+      rejection, and verifies only an applied change (ADR 0012). A direct call takes no lock, so a concurrent
+      config-set can erase it, and it reads a lost reply as a failure. Limit: the rule matches the method
+      name, so it cannot see a call through an alias.
     metadata:
       category: correctness
       confidence: HIGH
@@ -316,11 +320,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Read the live configuration for a read-modify-write through
-      KeaClient.config_candidate(). It validates the config-get reply and the
-      Dhcp4/Dhcp6 block before the edit reads it, and CandidateConfiguration
-      validates each list the edit walks. A hand-parsed config-get reply
-      turns a malformed block into an AttributeError and an HTTP 500.
+      A function that calls `config_set()` also reads `config-get` itself. Read the live configuration for a
+      read-modify-write through `KeaClient.config_candidate()`. It validates the config-get reply and the
+      `Dhcp4`/`Dhcp6` block before the edit reads it, and `CandidateConfiguration` validates each list the
+      edit walks. A hand-parsed config-get reply turns a malformed block into an `AttributeError` and an HTTP
+      500.
     metadata:
       category: correctness
       confidence: HIGH
@@ -343,8 +347,9 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Use KeaException.unsupported_command instead of comparing the response result with 2.
-      The property is the one definition of an unsupported command.
+      `exc.response.get("result") == 2` (or `["result"]`) is compared outside `KeaException`. Use
+      `KeaException.unsupported_command` instead. The property is the one definition of an unsupported
+      command.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -400,10 +405,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      NetBox does not enforce Prefix, IPRange, or IPAddress keys in the database.
-      ENFORCE_GLOBAL_UNIQUE is checked only in clean(), so duplicate rows can exist.
-      get_or_create() and update_or_create() then raise MultipleObjectsReturned on every run.
-      Query with filter(...) and handle more than one match explicitly through IPAM reconciliation.
+      `get_or_create()` or `update_or_create()` is called on `Prefix`, `IPRange` or `IPAddress`, directly or
+      on a queryset chain such as `.filter(...)`. NetBox does not enforce these keys in the database.
+      `ENFORCE_GLOBAL_UNIQUE` is checked only in `clean()`, so duplicate rows can exist, and each call then
+      raises `MultipleObjectsReturned`. Query with `filter(...)` and handle more than one match explicitly
+      through IPAM reconciliation. An exact `pk=` or `id=` lookup is exempt.
     metadata:
       category: correctness
       confidence: HIGH
@@ -431,11 +437,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not catch ChangeRejected in a view. Run the change through
-      _run_change(), or a loop of changes through _run_change_loop(), in
-      views/_base.py. They are the one place that turns an outcome or a rejection
-      into a message (ADR 0005, ADR 0011). A second handler gives the same
-      rejection a different message.
+      Do not catch `ChangeRejected` in a view. Run the change through `_run_change()`, or a loop of changes
+      through `_run_change_loop()`, in `views/_base.py`. They are the one place that turns a Configuration
+      Change or Runtime Change outcome or rejection into a message (ADR 0005, ADR 0011). A second handler
+      gives the same rejection a different message. The rule exempts a function by these two names.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -480,10 +485,9 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Define _run_change and _run_change_loop only in views/_base.py. The rule
-      kea-change-rejection-caught-outside-mapper exempts a function by
-      these names, so a second definition in another view would hide its catch of
-      ChangeRejected.
+      Define `_run_change` and `_run_change_loop` only in `views/_base.py`. The rule
+      `kea-change-rejection-caught-outside-mapper` exempts a function by these names, so a second definition
+      in another view would hide its catch of `ChangeRejected`.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -507,11 +511,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not call a config_write or runtime_change operation inside a try whose
-      except catches Exception, BaseException, or everything. That handler also
-      catches ChangeRejected and hides it from _run_change() in views/_base.py.
-      Pass the call to _run_change() or _run_change_loop() as a lambda, and
-      catch only the errors that you expect.
+      Do not call a `config_write` or `runtime_change` operation inside a `try` whose `except` catches
+      `Exception`, `BaseException`, or everything. That handler also catches `ChangeRejected` and hides it
+      from `_run_change()` in `views/_base.py`. Pass the call to `_run_change()` or `_run_change_loop()` as a
+      lambda, and catch only the errors that you expect. A call passed as a lambda is exempt, because the
+      mapper catches the rejection first.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -561,8 +565,9 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Pass timeout= to this subprocess call. Without a timeout, a child process that stops
-      responding blocks the caller with no limit, and a test run or script hangs instead of failing.
+      Pass `timeout=` to this `subprocess.run()`, `call()`, `check_call()` or `check_output()` call. Without a
+      timeout, a child process that stops responding blocks the caller with no limit, and a test run or script
+      hangs instead of failing.
     metadata:
       category: correctness
       confidence: HIGH
@@ -578,10 +583,13 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Send Kea HTTP requests through KeaClient.command(). It applies the TLS settings of the Server on
-      each request and reports a missing TLS file as KeaTLSFileError, a RequestException. A request sent
-      outside it lets the environment CA bundle replace those settings, and a missing TLS file escapes
-      the RequestException handlers of the views as a plain OSError.
+      `requests.Session()`, `requests.get()`, `post()`, `put()`, `patch()`, `delete()`, `head()` or
+      `request()` is called outside `kea.py`. Send Kea HTTP requests through `KeaClient.command()`. It applies
+      the TLS settings of the Server on each request and reports a missing TLS file as `KeaTLSFileError`, a
+      `RequestException`. A request sent outside it lets the environment CA bundle replace those settings, and
+      a missing TLS file escapes the `RequestException` handlers of the views as a plain `OSError`. Limit: the
+      rule matches the `requests.` module prefix only, so an aliased import (`from requests import post`,
+      `import requests as r`) is not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -607,11 +615,15 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Parse IP address and network text with netbox_kea/ip_parse.py. ipaddress accepts an IPv6 scope
-      zone (fe80::1%eth0) and keeps it in the value, and Kea and NetBox IPAM cannot use it. ip_parse
-      refuses the zone with netaddr. An int literal is not text, so the rule permits it. An (address,
-      length) tuple is matched: ipaddress parses its address element as text. Limit: netaddr.IPNetwork
-      is not matched, because the IPAM writes build it from parsed values.
+      Parse IP address and network text with `netbox_kea/ip_parse.py`. The rule matches `ip_address()`,
+      `ip_network()`, `ip_interface()` and the family classes `IPv4Address` to `IPv6Interface` of `ipaddress`
+      (also through an import alias), and `netaddr.IPAddress()`. `ipaddress` accepts an IPv6 scope zone
+      (`fe80::1%eth0`) and keeps it in the value, and Kea and NetBox IPAM cannot use it. `ip_parse` refuses
+      the zone with netaddr. An int literal (`IPv4Address(0)`) is not text, so the rule permits it. An
+      `(address, length)` tuple is matched: `ipaddress` parses its address element as text. Limits: an int in
+      a variable is reported, a call through another name (`parse = ipaddress.ip_address`) is not seen, and
+      `netaddr.IPNetwork()` is not matched, because the IPAM writes build it from parsed values.
+      `test_ip_parse.py` checks a pydantic field typed with `ipaddress`, not this rule.
     metadata:
       category: correctness
       confidence: HIGH
@@ -641,8 +653,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Run MAC lookup and save in event_scope.atomic() before catching their errors.
-      A failed MAC write must not abort the caller's IPAM claim.
+      A MAC lookup or save in `sync_mac_address()` is outside `event_scope.atomic()`. Run the MAC lookup and
+      save in `event_scope.atomic()` before you catch their errors. A failed MAC write must not abort the IPAM
+      claim of the caller. The rule covers the savepoint boundary of this synchronizer, not transaction
+      ownership across other callers.
     metadata:
       category: correctness
       confidence: HIGH
@@ -665,10 +679,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not use NetBox's event queue internals (events_queue, EventContext, enqueue_event).
-      Open the transaction with event_scope.atomic(): NetBox then dispatches a unit's events
-      after its COMMIT, and none when it rolls back.
-      Limit: the rule matches the names as text, so a comment that names them also matches.
+      Do not use the event queue internals of NetBox (`events_queue`, `EventContext`, `enqueue_event`). NetBox
+      owns its event queue, and `event_scope.atomic()` uses only `event_tracking`. Open the transaction with
+      `event_scope.atomic()`: NetBox then dispatches the events of a unit after its COMMIT, and none when it
+      rolls back. Limit: the rule matches the names as text, so a comment that names them also matches.
     metadata:
       category: correctness
       confidence: HIGH
@@ -684,8 +698,9 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Open the transaction with event_scope.atomic(), not django.db.transaction.atomic.
-      The owner decides whether the block is a unit that dispatches its events only after its COMMIT.
+      Open the transaction with `event_scope.atomic()`, not `django.db.transaction.atomic` (a call, a `with`,
+      a decorator or an aliased import). The owner decides whether the block is a unit that dispatches its
+      events only after its COMMIT.
     metadata:
       category: correctness
       confidence: HIGH
@@ -704,9 +719,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Raise the refusal before the first event-producing write of a caught event_scope.atomic() block.
-      Inside a transaction the block is a savepoint, and NetBox dispatches the event of a write that it rolled back.
-      Limit: writes and raises inside called helpers and callbacks are not seen.
+      Raise the refusal before the first event-producing write of a caught `event_scope.atomic()` block. The
+      rule sees a `raise` after `save()`, `delete()`, `create()`, `get_or_create()`, `update_or_create()` or
+      an m2m `set()`, `add()`, `remove()` or `clear()` in such a block inside a `try`. Inside a transaction
+      the block is a savepoint, and NetBox dispatches the event of a write that it rolled back. Limit: writes
+      and raises inside called helpers and callbacks are not seen.
     metadata:
       category: correctness
       confidence: MEDIUM
@@ -757,13 +774,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
-      The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
-      failed row. After an applied change, return "events-failed" from a SideEffectStatus-annotated function
-      (ADR 0012). A Manual Sync catches ClaimEventsFailed, which holds the claim result, before it re-raises
-      every other EventDispatchError (ADR 0011). Limits: the handler order is not checked, the handler of
-      ClaimEventsFailed is not checked; a try with finally and handlers around callers of event_scope.atomic
-      other than claim() and reconcile() are not seen.
+      Add an `except event_scope.EventDispatchError:` clause before the broad handler (`Exception`,
+      `BaseException` or `RuntimeError`, alone or in a tuple, or a bare `except`) of this `try`. The unit
+      committed and its events did not dispatch, so the run must fail (`raise`), not report a failed row.
+      After an applied change, return `"events-failed"` from a function annotated `-> SideEffectStatus` (ADR
+      0012). A Manual Sync catches `ClaimEventsFailed`, which holds the claim result, before it re-raises
+      every other `EventDispatchError` (ADR 0011). The one reviewed broad handler above units is the
+      per-Server catch of the IPAM job in `jobs.py`, which logs the error and counts it in the job report.
+      Limits: the handler order is not checked, the handler of `ClaimEventsFailed` is not checked; a `try`
+      with `finally` and handlers around callers of `event_scope.atomic()` other than `claim()` and
+      `reconcile()` are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -973,9 +993,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Delete IPAddress, Prefix and IPRange rows and change their status only in
-      netbox_kea/ipam_reconciliation.py. Reconciliation checks ownership and the
-      upgrade barrier before it changes or removes an IPAM row.
+      Delete `IPAddress`, `Prefix` and `IPRange` rows and change their status only in
+      `netbox_kea/ipam_reconciliation.py`. Reconciliation checks ownership and the upgrade barrier before it
+      changes or removes an IPAM row. The rule covers direct queryset chains, local query bindings and typed
+      helper parameters, also through import aliases.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1029,9 +1050,12 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Parse a number from request text with parse_decimal() from netbox_kea.decimal_text.
-      int(), str.isdigit() and a regex \d also accept other Unicode digits, and int() also
-      accepts surrounding whitespace.
+      Parse a number from request text with `parse_decimal()` from `netbox_kea.decimal_text`. The rule sees
+      `str.isdigit()`, `isdecimal()` or `isnumeric()`, a `\d` in an `re` pattern, and `int()` of a request
+      value: `request.GET`, `POST`, `query_params` or `data`, a `params` mapping, or form `cleaned_data`,
+      directly or through a local variable. These also accept other Unicode digits, so `?subnet_id=١٢` reads
+      Subnet 12, and `int()` also accepts surrounding whitespace. Limit: a value passed to another function as
+      a parameter is not followed.
     paths:
       exclude:
         - "**/tests/**"
@@ -1069,16 +1093,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not read .diagnostics or choose messages.ERROR or messages.WARNING in a view. Pass the
-      Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
-      views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
-      that picks a level by hand codes the rule again, and the copies drift.
-      Exempt: the change outcome in _run_change(), _rejection_message(), _unconfirmed_message() and
-      _persistence_failure(), the lease export refusal in _incomplete_export_message(), and a function that
-      parses a Reservation Transfer Document.
-      Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
-      to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
-      call is not seen either, because non-Snapshot messages use these calls correctly.
+      Do not read `.diagnostics` or choose `messages.ERROR` or `messages.WARNING` in a view. Pass the Snapshot
+      to `notice()`, or run a raised Reservation or Lease read through `load_snapshot()`, in
+      `views/notices.py`, and show the Notice through `show_notices()`, a template or `ServerNotices`. One
+      function there codes the Presentation rule of ADR 0003 for every Snapshot; a view that picks a level by
+      hand codes the rule again, and the copies drift. Exempt: the change outcome in `_run_change()`,
+      `_rejection_message()`, `_unconfirmed_message()` and `_persistence_failure()`, the lease export refusal
+      in `_incomplete_export_message()`, and a function that parses a Reservation Transfer Document. Limits:
+      an alias (a messages constant imported by name, or the diagnostics of a variable passed to a helper
+      outside `views/`) and templates are not seen. A `messages.error()` or `messages.warning()` call is not
+      seen either, because non-Snapshot messages use these calls correctly.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -1122,15 +1146,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      This view function reads a Catalogue, Server Configuration, Reservation or Lease Snapshot, but it
-      calls none of notice(), failed_load() and load_snapshot() from views/notices.py. The page then does
-      not show an unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to
-      notice() (or to failed_load() when a load cannot go on), or run a raised Reservation or Lease read
-      through load_snapshot(), and show the Notice.
-      Exempt by name: the DDNS suffix read of a hostname preview.
-      Limits: a read through a helper that this rule does not name, a read function passed by reference
-      other than to executor.submit(), an aliased import, and a Notice made in a called helper are not
-      seen.
+      This view function reads a Catalogue, Server Configuration, Reservation or Lease Snapshot (directly,
+      through a named read helper, or through `executor.submit()`), but it calls none of `notice()`,
+      `failed_load()` and `load_snapshot()` from `views/notices.py`. A Reservation read is a
+      `reservation_reads` read (`cached_page()` or a `read_*()` function). The page then does not show an
+      unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to `notice()` (or to
+      `failed_load()` when a load cannot go on), or run a raised Reservation or Lease read through
+      `load_snapshot()`, and show the Notice. Exempt by name: the DDNS suffix read of a hostname preview.
+      Limits: a read through a helper that this rule does not name, a read function passed by reference other
+      than to `executor.submit()`, an aliased import, and a Notice made in a called helper are not seen.
+      `test_snapshot_notice_sweep.py` covers the pages at run time.
     metadata:
       category: correctness
       confidence: MEDIUM
@@ -1191,15 +1216,15 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      This code catches a failed Kea read itself: KeaException, requests.RequestException, the malformed reply base
-      MalformedKeaReply, or KeaClientSettingsError. read_failure.attempt() is the one classifier of a failed read
-      (ADR 0015). It returns a ReadFailure with the kind (unsupported, refused, unreachable, malformed,
-      misconfigured), and it logs the failure. Run the read through attempt(), or through load_snapshot() or
-      load_target() in a view, and map the kind to the presentation of the caller.
-      Exempt by name: the write classification of ADR 0005 and ADR 0011 (change_outcome.mutate and
-      config_write._test_before).
-      Limits: an except of Exception, of a subclass such as requests.ConnectionError or MalformedReply, or of an
-      aliased import is not seen.
+      This code catches a failed Kea read itself: an `except` names `KeaException`,
+      `requests.RequestException`, the malformed reply base `MalformedKeaReply` or `KeaClientSettingsError`,
+      alone or in a tuple. `read_failure.attempt()` is the one classifier of a failed read (ADR 0015). It
+      returns a `ReadFailure` with the kind (unsupported, refused, unreachable, malformed, misconfigured), and
+      it logs the failure. Run the read through `attempt()`, or through `load_snapshot()` or `load_target()`
+      in a view, and map the kind to the presentation of the caller. Exempt by name: the write classification
+      of ADR 0005 and ADR 0011 (`change_outcome.mutate` and `config_write._test_before`). Limits: an `except`
+      of `Exception`, of a subclass such as `requests.ConnectionError` or `MalformedReply`, or of an aliased
+      import is not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1311,9 +1336,9 @@ rules:
     severity: ERROR
     message: >-
       A Subnet Catalogue whose identity and configuration facts disagree omits each disputed Subnet, so a
-      complete configuration alone does not show that a CIDR or an address is absent from Kea. Read
-      configuration_confirms_absence, which also needs consistent.
-      Limits: the rule sees the negated attribute read only, in views/ and subnet_catalogue.py.
+      complete configuration alone (`not <catalogue>.configuration_complete`) does not show that a CIDR or an
+      address is absent from Kea. Read `configuration_confirms_absence`, which also needs `consistent`. Limit:
+      the rule sees the negated attribute read only.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1327,12 +1352,15 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Reach the Django cache through netbox_kea/display_cache.py only. It owns every key, the configuration and
-      records generations, the TTLs of the Display Cache settings and the admission rule (ADR 0009). A key built in
-      another module has none of the generations, so a Kea write or a settings save cannot make it unreachable.
-      Limits: the rule sees django.core.cache and the private names of display_cache (an import, absolute or
-      relative, or an attribute of the module name or of an alias from "from . import display_cache as x");
-      another cache library, getattr() and a re-export are not seen.
+      Reach the Django cache through `netbox_kea/display_cache.py` only. It owns every key, the configuration
+      and records generations, the TTLs of the Display Cache settings and the admission rule (ADR 0009). A key
+      built in another module has none of the generations, so a Kea write or a settings save cannot make it
+      unreachable. The rule sees `django.core.cache` (`cache`, `caches`, `import django.core.cache`, `from
+      django.core import cache`, or an import from it), and a private name of `display_cache`: an absolute or
+      relative import of the name (`from .display_cache import _generation`, also in parentheses), or an
+      attribute of the module (`display_cache._generation`, also through `from . import display_cache as x`).
+      Limits: another cache library, `getattr()`, a re-export, and a cache reached through a helper outside
+      `netbox_kea/` are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1372,15 +1400,16 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not use a private name (a name that starts with "_") of netbox_kea/views/reservations.py or
-      netbox_kea/reservation_reads.py in another module, tests included. reservation_reads holds the Reservation read,
-      and its public names are its interface. A private name can change without notice, so a caller that uses it
-      breaks. Use a public name, or make the name public in its module.
-      Limits: the rule sees a from-import of a private source name (absolute, or relative with one or two dots
-      before views.reservations or reservation_reads, in any layout, also with "as") and an attribute of the module
-      name or of an alias from "from ... import reservation_reads as x" or "from ...views import reservations as x".
-      A "from .reservations import" in views/ is rule kea-private-reservation-view-import. "import ... as x" of the
-      full module path, getattr(), a mock.patch() target string and a re-export are not seen.
+      Do not use a private name (a name that starts with `_`) of `netbox_kea/views/reservations.py` or
+      `netbox_kea/reservation_reads.py` in another module, tests included. `reservation_reads` holds the
+      Reservation read (#236), and its public names are its interface. A private name can change without
+      notice, so a caller that uses it breaks. Use a public name, or make the name public in its module. The
+      rule sees a from-import of a private source name (absolute, or relative with one or two dots before
+      `views.reservations` or `reservation_reads`, in any layout, also with `as`; a private alias of a public
+      name is allowed) and an attribute of the module name or of an alias from `from ... import
+      reservation_reads as x` or `from ...views import reservations as x`. A `from .reservations import` in
+      `views/` is rule `kea-private-reservation-view-import`. Limits: `import ... as x` of the full module
+      path, `getattr()`, a `mock.patch()` target string and a re-export are not seen.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -1431,11 +1460,12 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not import a private name (a name that starts with "_") of views/reservations.py into another view module
-      with "from .reservations import" or "from . import reservations". The reason is the same as for
-      kea-private-reservation-read-import. Use a public name, or make the name public in its module. The rule scans
-      views/ only, because outside it "from .reservations" names the domain module netbox_kea/reservations.py.
-      Limits: getattr() and a re-export are not seen.
+      Do not import a private name (a name that starts with `_`) of `views/reservations.py` into another view
+      module with `from .reservations import` (in any layout; a private alias of a public name is allowed) or
+      `from . import reservations`. The reason is the same as for `kea-private-reservation-read-import`. Use a
+      public name, or make the name public in its module. The rule scans `views/` only, because outside it
+      `from .reservations` names the domain module `netbox_kea/reservations.py`. Limits: `getattr()` and a
+      re-export are not seen.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -1462,12 +1492,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      A view reads the IPAM Ownership with address_ownership() or prefix_ownership() outside a try that catches
-      DatabaseError. The read only feeds a badge or an advisory, so a failed read must show the unknown state or no
-      advisory, not a 500 reply. Catch DatabaseError, log it, and degrade as the Reservation and Lease pages and Row
-      Sync do.
-      Limits: a call inside an except or finally block of such a try, an aliased import and a call through a
-      helper are not seen.
+      A view reads the IPAM Ownership with `address_ownership()` or `prefix_ownership()` outside a `try` that
+      catches `DatabaseError` (alone or in a tuple). The read only feeds a badge or an advisory, so a failed
+      read must show the unknown state or no advisory, not a 500 reply. Catch `DatabaseError`, log it, and
+      degrade as the Reservation and Lease pages and Row Sync do. Limits: a call inside an `except` or
+      `finally` block of such a `try`, an aliased import and a call through a helper are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1493,13 +1522,14 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      The DHCP Import names a DHCP Option of a planned object with PlannedOptions.paths(). A keyed Option takes the
-      path of its OptionKey, which a later run also uses when it removes the Option; kea_paths.option() takes the code,
-      else the name, so one Kea option gets two paths in the stored run results. Pass the planned_options() of the
-      object and use its paths.
-      Limits: the rule sees kea_paths.option() in netbox_kea/integrations/; an import of the function by name and a
-      call through a helper are not seen. The parse step (mappers/) runs before the definitions are known and keeps
-      the literal path.
+      The DHCP Import names a DHCP Option of a planned object with `PlannedOptions.paths()`. A keyed Option
+      takes the path of its `OptionKey`, which a later run also uses when it removes the Option;
+      `kea_paths.option()` takes the code, else the name, so one Kea option gets two paths in the stored run
+      results. Pass the `planned_options()` of the object and use its paths. A call inside the
+      `PlannedOptions` class is exempt. Limits: the rule sees `kea_paths.option()` in
+      `netbox_kea/integrations/`; an import of the function by name and a call through
+      a helper are not seen. The parse step (`mappers/`) runs before the definitions are known and keeps the
+      literal path.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1519,12 +1549,13 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      The DHCP Import names a planned or mapped object by the path of its key (key.path(family), or
-      MappingSource.path for a stored source). A run names an object by this one path when it creates it and when it
-      removes it; a path that a writer renders again can differ from it. Use the key of the planned object.
-      Limits: the rule sees kea_paths.subnet(), pool(), pd_pool(), reservation(), client_class(), shared_network()
-      and option_definition() in netbox_kea/integrations/, outside a path(self, family) method; an import of a
-      function by name and a call through a helper are not seen. The parse step (mappers/) keeps its literal paths.
+      The DHCP Import names a planned or mapped object by the path of its key (`key.path(family)`, or
+      `MappingSource.path` for a stored source). A run names an object by this one path when it creates it and
+      when it removes it; a path that a writer renders again can differ from it. Use the key of the planned
+      object. Limits: the rule sees `kea_paths.subnet()`, `pool()`, `pd_pool()`, `reservation()`,
+      `client_class()`, `shared_network()` and `option_definition()` in `netbox_kea/integrations/`, outside a
+      `path(self, family)` method; an import of a function by name and a call through a helper are not seen.
+      The parse step (`mappers/`) keeps its literal paths.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1551,19 +1582,19 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Write an imported DHCP plugin row through dhcp_import_write.write_row() with a RowAdapter of its kind. The
-      protocol finds or adopts the row, writes it, observes its DHCP Import Mapping, reports a failed write in one
-      failure table (a ValidationError gives the messages of the plugin), and skips the planned subtree of an object
-      that it does not write. A writer with its own observe_mapping() or its own "except
-      event_scope.EventDispatchError: raise" and "except ManagedFieldsMismatch: raise" pair repeats that protocol and
-      drifts from it. Only the DHCPServer, the root of a run, writes itself: upsert_dhcp_server() and
-      apply_global_settings() are exempt by name.
-      Limits: the rule sees netbox_kea/integrations/; a writer that bypasses the protocol without calling
-      observe_mapping() or opening the re-raise pair is not caught, and a call through a module attribute or an
-      aliased import is not seen. The pair matches in this handler order only: EventDispatchError, then
-      ManagedFieldsMismatch. The exemptions go by function name, so another function of the same name is exempt too. A
-      lone "except event_scope.EventDispatchError: raise" (the Subnet ID moves, the delegated Prefix attachment, the
-      stale removal) is not the pair.
+      Write an imported DHCP plugin row through `dhcp_import_write.write_row()` with a `RowAdapter` of its
+      kind. The protocol finds or adopts the row, writes it, observes its DHCP Import Mapping, reports a
+      failed write in one failure table (a `ValidationError` gives the messages of the plugin), and skips the
+      planned subtree of an object that it does not write. A writer with its own `observe_mapping()` or its
+      own `except event_scope.EventDispatchError: raise` and `except ManagedFieldsMismatch: raise` pair
+      repeats that protocol and drifts from it. Only the DHCPServer, the root of a run, writes itself:
+      `upsert_dhcp_server()` and `apply_global_settings()` are exempt by name. Limits: the rule sees
+      `netbox_kea/integrations/`; a writer that bypasses the protocol without calling `observe_mapping()` or
+      opening the re-raise pair is not caught, and a call through a module attribute or an aliased import is
+      not seen. The pair matches in this handler order only: `EventDispatchError`, then
+      `ManagedFieldsMismatch`. The exemptions go by function name, so another function of the same name is
+      exempt too. A lone `except event_scope.EventDispatchError: raise` (the Subnet ID moves, the delegated
+      Prefix attachment, the stale removal) is not the pair.
     metadata:
       category: correctness
       confidence: HIGH
@@ -1596,11 +1627,10 @@ rules:
     severity: ERROR
     message: >-
       An IPAM Ownership source is compared with a string literal. Compare it with a constant of
-      netbox_kea/ipam_sources.py, or read the per-source fact from its SOURCES row, so the source table stays the one
-      place that knows each source.
-      Limits: the rule matches only a name or an attribute called "source", compared by ==, != or (not) in a literal
-      tuple, list or set. A literal in another collection ("pool" in sources), a renamed variable and a literal key of
-      a mapping are not seen.
+      `netbox_kea/ipam_sources.py`, or read the per-source fact from its `SOURCES` row, so the source table
+      stays the one place that knows each source. Limits: the rule matches only a name or an attribute called
+      `source`, compared by `==`, `!=` or (`not`) `in` a literal tuple, list or set. A literal in another
+      collection (`"pool" in sources`), a renamed variable and a literal key of a mapping are not seen.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -1628,14 +1658,14 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Read and write DHCP Import Mappings through netbox_kea/integrations/dhcp_import_mappings.py, the Mapping store.
-      It holds every KeaDhcpLink query of the DHCP Import, so each lookup of a source goes through its unique index
-      (exact_source) and each write takes the mapping lock of ADR 0008. Add a function there and call it.
-      Exempt: the ADR 0008 coordination in dhcp_mapping_lifecycle.py, models.py, the REST API, GraphQL, the
-      migrations and the tests.
-      Limits: the rule sees KeaDhcpLink.objects, KeaDhcpLink._base_manager and a KeaDhcpLink(...) call by that name. An
-      alias of the class, a model from apps.get_model(), a related manager (server.dhcp_plugin_links) and a raw SQL
-      query are not seen.
+      Read and write DHCP Import Mappings through `netbox_kea/integrations/dhcp_import_mappings.py`, the
+      Mapping store. It holds every `KeaDhcpLink` query of the DHCP Import, so each lookup of a source goes
+      through its unique index (`exact_source`) and each write takes the mapping lock of ADR 0008. Add a
+      function there and call it. Exempt: the ADR 0008 coordination in `dhcp_mapping_lifecycle.py`,
+      `models.py`, the REST API, GraphQL, the migrations and the tests. Limits: the rule sees
+      `KeaDhcpLink.objects`, `KeaDhcpLink._base_manager` and a `KeaDhcpLink(...)` call by that name. An alias
+      of the class, a model from `apps.get_model()`, a related manager (`server.dhcp_plugin_links`) and a raw
+      SQL query are not seen.
     metadata:
       category: maintainability
       confidence: HIGH

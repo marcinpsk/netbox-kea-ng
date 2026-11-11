@@ -286,6 +286,78 @@ class LeaseEditTest(_ViewTestBase):
         self.assertEqual(kea.bodies("lease6-get")[0]["arguments"], {"ip-address": _PREFIX})
         self.assertEqual(_messages(response), [f"Lease {_PREFIX} not found."])
 
+    def test_an_applied_edit_writes_a_journal_entry_and_sends_lease_updated(self):
+        received = _Received(self, signals.lease_updated)
+        daemon = LeaseDaemon(4, _address4())
+        form = self._shown(daemon, 4, "192.0.2.40")
+
+        _kea, response = self._save(
+            daemon,
+            4,
+            "192.0.2.40",
+            form,
+            hostname="renamed.example.org",
+            hw_address="aa:bb:cc:00:00:99",
+            valid_lft="7200",
+        )
+
+        self.assertEqual(_messages(response), ["Lease 192.0.2.40 updated."])
+        (journal,) = JournalEntry.objects.filter(assigned_object_id=self.server.pk)
+        self.assertEqual(
+            journal.comments,
+            "Lease updated: 192.0.2.40; hw-address: aa:bb:cc:00:00:99; hostname: renamed.example.org; valid-lft: 7200",
+        )
+        (call,) = received.calls
+        self.assertEqual((call["server"], call["dhcp_version"]), (self.server, 4))
+        self.assertEqual(
+            (call["before"].hostname, call["before"].hw_address), ("host40.example.org", "aa:bb:cc:00:00:40")
+        )
+        self.assertEqual(call["edit"].written, ("hostname", "client_identifier", "valid_lifetime"))
+        self.assertIs(call["request"], response.wsgi_request)
+
+    def test_an_edit_that_clears_the_hostname_journals_it_as_cleared(self):
+        daemon = LeaseDaemon(6, _prefix())
+        form = self._shown(daemon, 6, f"{_PREFIX}/56")
+
+        self._save(daemon, 6, f"{_PREFIX}/56", form, hostname="")
+
+        (journal,) = JournalEntry.objects.filter(assigned_object_id=self.server.pk)
+        self.assertEqual(journal.comments, f"Lease updated: {_PREFIX}/56; hostname cleared")
+
+    def test_a_refused_edit_writes_no_journal_entry_and_sends_no_signal(self):
+        received = _Received(self, signals.lease_updated)
+        daemon = LeaseDaemon(4, _address4())
+        form = self._shown(daemon, 4, "192.0.2.40")
+        daemon.leases.clear()
+
+        self._save(daemon, 4, "192.0.2.40", form, hostname="renamed.example.org")
+
+        self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
+        self.assertEqual(received.calls, [])
+
+    def test_a_failing_lease_updated_receiver_after_an_applied_edit_is_a_separate_error(self):
+        def fail(sender, **kwargs):
+            raise RuntimeError("receiver bug")
+
+        signals.lease_updated.connect(fail)
+        self.addCleanup(signals.lease_updated.disconnect, fail)
+        daemon = LeaseDaemon(4, _address4())
+        form = self._shown(daemon, 4, "192.0.2.40")
+        with self.assertLogs("netbox_kea.after_apply", "ERROR"):
+            _kea, response = self._save(daemon, 4, "192.0.2.40", form, hostname="renamed.example.org")
+
+        self.assertEqual(daemon.lease("192.0.2.40")["hostname"], "renamed.example.org")
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Lease 192.0.2.40 updated."),
+                (
+                    django_messages.ERROR,
+                    "Kea applied the change, but a receiver of the lease_updated signal failed; see server logs.",
+                ),
+            ],
+        )
+
 
 class LeaseDeleteTest(_ViewTestBase):
     """Delete carries the facts of the list row and checks a fresh read before it deletes."""
