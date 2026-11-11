@@ -846,6 +846,24 @@ class ImportOwnershipTest(TestCase):
                 self.assertIn("reservation-prefix", summary.ownership.incomplete)
                 self.assertFalse(HostReservation.objects.get().ipv6_prefixes.filter(prefix=self.network).exists())
 
+    def test_a_delegated_prefix_disagreement_counts_once_although_the_import_claims_the_prefix_twice(self):
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        other = _make_db_server(name="disagreeing-owner", dhcp4=False, dhcp6=True)
+        # A Prefix's CIDR fixes its mask, so seed inconsistent owner facts to make both claims disagree.
+        IPAMOwnershipLink.objects.create(
+            server=other,
+            family=6,
+            source="reservation-prefix",
+            prefix=self.delegated(),
+            facts={"prefix_length": 48},
+            confirmation=next_confirmation_number(),
+        )
+
+        summary = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+
+        self.assertEqual((summary.owner_disagreements, summary.errors), (1, 0), summary.warnings)
+        self.assertIn("1 IPAM owner disagreement(s)", " ".join(_summary_problems(summary)))
+
     def test_failed_excluded_claim_preserves_both_prefix_attachments(self):
         excluded = "2001:db8:100:ff::/64"
         host = {**self.identity, "prefixes": [self.network], "excluded-prefixes": [excluded]}
