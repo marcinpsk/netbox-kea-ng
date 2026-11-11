@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     readme_path.write_text(expected, encoding="utf-8")
     sys.stderr.write(f"{README}: wrote the Rules table\n")
-    return 1
+    return 0
 
 
 if __name__ == "__main__":

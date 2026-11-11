@@ -51,7 +51,7 @@ def test_a_changed_message_makes_the_check_fail_until_the_script_writes_the_tabl
     written = _run(root)
 
     assert (stale.returncode, stale.stderr) == (1, ".opengrep/README.md is stale: run scripts/opengrep_readme.py\n")
-    assert written.returncode == 1
+    assert (written.returncode, written.stderr) == (0, ".opengrep/README.md: wrote the Rules table\n")
     assert _run(root, "--check").returncode == 0
     assert (
         _row(root, FIRST_RULE)
