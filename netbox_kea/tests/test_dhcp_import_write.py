@@ -568,6 +568,25 @@ _CLASS_ROWS = (
         None,
         refuse="ClientClass",
     ),
+    _Row(
+        "write failure of its Option Definition",
+        _CLASS_KEY,
+        _client_class(),
+        (
+            _created(Kind.CLIENT_CLASS, _CLASS),
+            (Kind.OPTION_DEFINITION, _CLASS_DEF, *_FAILED),
+            (
+                Kind.OPTION,
+                _CLASS_OPTION,
+                Outcome.SKIPPED,
+                Reason.PARENT_NOT_IMPORTED,
+                "Its Option Definition is not imported. See server logs.",
+                None,
+            ),
+        ),
+        {"name": "lab", "test": "member('KNOWN')", "row": "new"},
+        refuse="OptionDefinition",
+    ),
 )
 
 # ── Shared Network ───────────────────────────────────────────────────────────
@@ -1239,3 +1258,26 @@ class RowWriteTableTest(TestCase):
 
     def test_option_rows(self):
         self._assert_rows(_OPTION_ROWS, self._plugin_0_2_0())
+
+    def test_a_reservation_of_a_mapped_subnet_whose_write_fails_keeps_its_stored_row(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        fixture.apply_cleanly(_reservation())
+        stored = fixture.mapped(_RESERVATION_KEY)
+        config = _reservation("host-b")
+        config["subnet4"][0]["valid-lifetime"] = 7200
+
+        with _refusing("Subnet") as refused:
+            summary = fixture.apply(config)
+
+        self.assertTrue(refused)
+        self.assertEqual(
+            [
+                (entry.kind, entry.outcome, entry.reason, entry.detail)
+                for entry in summary.entries
+                if entry.path in {_SUBNET, _SUBNET_RESERVATION}
+            ],
+            [(Kind.SUBNET, *_FAILED[:3]), (Kind.RESERVATION, *_SUBNET_NOT_IMPORTED[:3])],
+        )
+        # The Reservation does not attach to the stored Subnet row, so the stored Reservation keeps its hostname.
+        stored.refresh_from_db()
+        self.assertEqual(stored.hostname, "host-a")
