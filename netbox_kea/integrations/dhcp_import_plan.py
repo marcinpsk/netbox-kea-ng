@@ -51,10 +51,15 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class Planned(Generic[K, T]):
-    """One intended DHCP plugin object: its key and the parsed Kea intent."""
+    """One intended DHCP plugin object without planned children: its key and the parsed Kea intent."""
 
     key: K
     intent: T
+
+    @property
+    def children(self) -> tuple[PlannedObject, ...]:
+        """Return the planned children of the object: it has none."""
+        return ()
 
 
 #: The longest Kea name that the import keys: a DHCP plugin row holds a name of 255 characters.
@@ -526,6 +531,11 @@ class PlannedServer:
     interfaces: tuple[str, ...] | None
     key: ServerKey = ServerKey()
 
+    @property
+    def children(self) -> tuple[PlannedObject, ...]:
+        """Return the planned children of the global configuration: none, the plan holds its objects."""
+        return ()
+
 
 @dataclass(frozen=True)
 class PlannedClientClass:
@@ -538,6 +548,11 @@ class PlannedClientClass:
     # The custom Option Definitions of the class, written scoped to its row.
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...] = ()
 
+    @property
+    def children(self) -> tuple[PlannedObject, ...]:
+        """Return the planned children of the class: its own Option Definitions."""
+        return self.option_definitions
+
 
 @dataclass(frozen=True)
 class PlannedSharedNetwork:
@@ -547,6 +562,11 @@ class PlannedSharedNetwork:
     intent: SharedNetworkIntent
     # The Declared Values of the Shared Network, by Kea key. Its parent is the global configuration.
     settings: dict
+
+    @property
+    def children(self) -> tuple[PlannedObject, ...]:
+        """Return the planned children of the Shared Network: none, its member Subnets import on their own."""
+        return ()
 
 
 @dataclass(frozen=True)
@@ -562,6 +582,18 @@ class PlannedSubnet:
     # A Pool whose text is not a range inside the Subnet has an InvalidPoolKey; the apply skips that Pool.
     pools: tuple[Planned[PoolKey | InvalidPoolKey, PoolIntent], ...]
     pd_pools: tuple[Planned[PDPoolKey, PDPoolIntent], ...] = ()
+
+    @property
+    def children(self) -> tuple[PlannedObject, ...]:
+        """Return the planned children of the Subnet: its Pools, then its delegated-prefix Pools.
+
+        Its In-Subnet Reservations come from the Reservation Snapshot, so they are no children of the Subnet.
+        """
+        return (*self.pools, *self.pd_pools)
+
+
+#: A planned object of each kind. Each names its planned children; the DHCP Options of an object are not children.
+PlannedObject = PlannedServer | PlannedClientClass | PlannedSharedNetwork | PlannedSubnet | Planned
 
 
 @dataclass(frozen=True)
@@ -596,21 +628,38 @@ class FamilyPlan:
         """Return each custom Option Definition that Kea declares, by key."""
         return {planned.key: planned.intent for planned in self.every_option_definition}
 
+    def objects(self) -> Iterator[PlannedObject]:
+        """Yield each planned object, the Reservations included, each parent before its children.
+
+        The global configuration comes first, then the daemon's Option Definitions, the client classes, the Shared
+        Networks, the Subnets and the Reservations.
+        """
+        roots: tuple[PlannedObject, ...] = (
+            self.server,
+            *self.option_definitions,
+            *self.client_classes,
+            *self.shared_networks,
+            *self.subnets,
+            *keyed_reservations(self.reservations),
+        )
+        for root in roots:
+            yield from _with_children(root)
+
     def option_sets(self) -> tuple[PlannedOptions, ...]:
         """Return the DHCP Options of each object that the plan holds, the Reservations included."""
         declared = self.declared_definitions
-        return tuple(planned_options(planned, self.family, declared) for planned in self._option_parents())
+        return tuple(
+            planned_options(planned, self.family, declared)
+            for planned in self.objects()
+            if planned.key.kind in _OPTION_OWNERS
+        )
 
-    def _option_parents(self) -> Iterator:
-        """Yield each planned object that assigns DHCP Options."""
-        yield self.server
-        yield from self.client_classes
-        yield from self.shared_networks
-        for subnet in self.subnets:
-            yield subnet
-            yield from subnet.pools
-            yield from subnet.pd_pools
-        yield from keyed_reservations(self.reservations)
+
+def _with_children(planned: PlannedObject) -> Iterator[PlannedObject]:
+    """Yield *planned*, then each object of its planned subtree, each parent before its children."""
+    yield planned
+    for child in planned.children:
+        yield from _with_children(child)
 
 
 def _option_definitions(
@@ -743,6 +792,8 @@ _CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION, Kind.OPTION
 _CONFIGURATION_GAP = "The Server Configuration was not read in full."
 #: The mapped kinds whose objects assign DHCP Options. The global configuration of a family has no observation.
 _OPTION_PARENTS = (Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION)
+# The kinds of the planned objects that assign DHCP Options: each kind but the Option Definition.
+_OPTION_OWNERS = frozenset((Kind.SERVER, *_OPTION_PARENTS))
 
 
 def mapped_kinds(family: int) -> tuple[Kind, ...]:
@@ -856,18 +907,17 @@ def _reservation_gap(observation: ReservationObservation | None) -> str:
 
 
 def _observed_sources(plan: FamilyPlan, options: tuple[PlannedOptions, ...]) -> dict[Kind, frozenset[MappingSource]]:
-    """Return the Kea source of each object that the plan reports, by mapped kind. *options* keys its Options."""
-    pools = (pool.key.source for subnet in plan.subnets for pool in subnet.pools)
-    return {
-        Kind.OPTION: frozenset(key.source for each in options for key in each.keys if key is not None),
-        Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
-        Kind.POOL: frozenset(source for source in pools if source is not None),
-        Kind.PD_POOL: frozenset(pd_pool.key.source for subnet in plan.subnets for pd_pool in subnet.pd_pools),
-        Kind.SUBNET: frozenset(subnet.key.source for subnet in plan.subnets),
-        Kind.SHARED_NETWORK: frozenset(planned.key.source for planned in plan.shared_networks),
-        Kind.CLIENT_CLASS: frozenset(planned.key.source for planned in plan.client_classes),
-        Kind.OPTION_DEFINITION: frozenset(planned.key.source for planned in plan.every_option_definition),
-    }
+    """Return the Kea source of each object that the plan reports, by mapped kind. *options* keys its Options.
+
+    A Pool whose range is not valid has no source. The global configuration has no mapped kind.
+    """
+    found: dict[Kind, set[MappingSource]] = {kind: set() for kind in REMOVAL_ORDER}
+    for planned in plan.objects():
+        source = planned.key.source
+        if source is not None and planned.key.kind in found:
+            found[planned.key.kind].add(source)
+    found[Kind.OPTION] = {key.source for each in options for key in each.keys if key is not None}
+    return {kind: frozenset(sources) for kind, sources in found.items()}
 
 
 def _option_gaps(
