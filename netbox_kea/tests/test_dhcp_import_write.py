@@ -1376,6 +1376,16 @@ class WrittenStoreTest(SimpleTestCase):
         self.assertEqual(self.store.result(_CLASS_KEY), FAILED)
         self.assertIsNone(self.store.row(_CLASS_KEY))
 
+    def test_a_run_that_ends_with_an_undecided_planned_object_names_it(self):
+        with self.assertRaisesMessage(WriteOrderError, f"The run ended before it decided Dhcp4, {_CLASS}, "):
+            self.store.require_decided()
+        plan = plan_family(parse_dhcp_config(_reservation(), 4), None)
+        options = (key for each in plan.option_sets() for key in each.keys if key is not None)
+        for key in (*(planned.key for planned in plan.objects()), *options):
+            self.store.record(key, FAILED)
+
+        self.store.require_decided()
+
 
 class WriteOrderTest(TestCase):
     """A step that runs before the step whose result it reads fails the run with the order, not with a silent miss."""

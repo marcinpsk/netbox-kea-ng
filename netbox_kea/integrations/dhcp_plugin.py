@@ -196,6 +196,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     for entry in (*invalid, *plan.not_imported):
         summary.record(entry)
     dhcp_server, created = upsert_dhcp_server(server, plan.family)
+    scope.written.record(plan.server.key, dhcp_server)
     adopting = adoption_servers(server, dhcp_server)
 
     values = server_values(dhcp_server, plan.server, plan.family, capabilities, summary)
@@ -226,6 +227,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     delegated_step = import_reservation_snapshot(
         scope, dhcp_server, plan.reservations, references, adoption_servers=adopting
     )
+    scope.written.require_decided()
     # The Reservation writes come before the stale cleanup, so the cleanup sees each kept row as the run wrote it.
     observed = observations(plan)
     judgment = stale_judgment(server, plan, observed)

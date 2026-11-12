@@ -603,8 +603,8 @@ class ClassReferences:
                 summary.record(not_written(family, kind, path, Reason.NO_PLUGIN_HOME, detail))
         return found
 
-    def option_classes(self, names: tuple[str, ...], path: str, summary: ImportSummary) -> frozenset[int] | None:
-        """Return the imported client class of each name of the DHCP Option at *path*, or ``None`` to skip it.
+    def option_classes(self, names: tuple[str, ...]) -> frozenset[int] | NotWritten:
+        """Return the imported client class of each name of a DHCP Option, or why the run does not write the Option.
 
         An option whose class has no row is not imported: without the class it would reach more clients.
         """
@@ -616,9 +616,7 @@ class ClassReferences:
             cause = _class_not_imported(missing)
         else:
             cause = f"The DHCP plugin has no row for {missing}, a class that Kea's client-classes does not define."
-        detail = f"{cause} Without the class the option would reach more clients."
-        summary.record(not_written(self.written.family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED, detail))
-        return None
+        return NotWritten(Reason.PARENT_NOT_IMPORTED, f"{cause} Without the class the option would reach more clients.")
 
     def has_pending_import(self, names: tuple[str, ...]) -> bool:
         """Return whether Kea defines a named class that this run did not import."""

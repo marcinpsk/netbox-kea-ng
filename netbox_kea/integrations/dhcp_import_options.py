@@ -411,14 +411,17 @@ def upsert_options(scope: WriteScope, parent_obj, planned_set: PlannedOptions, r
             pending_dependency |= definition.reason == Reason.PARENT_NOT_IMPORTED
             summary.record(definition.entry(family, Kind.OPTION, path))
             summary.warn(f"{path}: {definition.detail}")
+            scope.written.record(key, definition)
             continue
-        classes = references.classes.option_classes(opt.client_classes, path, summary)
-        if classes is not None:
-            space = opt.space or kea_paths.default_space(family)
-            code = definition.code if definition is not None else opt.code
-            planned.append(_PlannedOption(opt, key, space, code, definition, classes))
-        else:
+        classes = references.classes.option_classes(opt.client_classes)
+        if isinstance(classes, NotWritten):
             pending_dependency |= references.classes.has_pending_import(opt.client_classes)
+            summary.record(classes.entry(family, Kind.OPTION, path))
+            scope.written.record(key, classes)
+            continue
+        space = opt.space or kea_paths.default_space(family)
+        code = definition.code if definition is not None else opt.code
+        planned.append(_PlannedOption(opt, key, space, code, definition, classes))
     adopts = not options_mapped(server, family, parent)
     pairing = [item for item in planned if adopts and mapped_target(server, family, item.key.source) is None]
     unmapped = []

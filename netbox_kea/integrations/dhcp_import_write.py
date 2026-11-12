@@ -122,6 +122,11 @@ class WrittenStore:
         result = self.result(key)
         return None if isinstance(result, NotWritten) else result
 
+    def require_decided(self) -> None:
+        """Raise :class:`WriteOrderError` when the run ends with a planned object that no step decided."""
+        if undecided := sorted(key.path(self.family) for key in self._planned - self._results.keys()):
+            raise WriteOrderError(f"The run ended before it decided {', '.join(undecided)}.")
+
 
 @dataclass(frozen=True)
 class WriteScope:
