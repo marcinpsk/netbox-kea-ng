@@ -13,6 +13,44 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.14.1 (2026-11-12)
+
+### Bug Fixes
+
+- **opengrep**: See a Server permission passed to has_perm() by keyword
+  ([`c576241`](https://github.com/marcinpsk/netbox-kea-ng/commit/c5762414e73f2355bcf17ecd0d90ca68e6e9e303))
+
+- **views**: Apply the refusal rule to every Server route and permitted Server
+  ([`9235f11`](https://github.com/marcinpsk/netbox-kea-ng/commit/9235f110690971f8661c93b9999d0db76fb77141))
+
+- **views**: Keep the disabled-family page off views of the whole Server
+  ([`d535498`](https://github.com/marcinpsk/netbox-kea-ng/commit/d5354987c857f9e7858b9b196a1e83752188b6fd))
+
+- **views**: Refuse every method of the Server switch on a hidden Server
+  ([`f0253c0`](https://github.com/marcinpsk/netbox-kea-ng/commit/f0253c095089c52dffdc249af039688fd9d3f1e0))
+
+### Documentation
+
+- Run Now and the Sync toggle need view and change permission on the Server
+  ([`286f374`](https://github.com/marcinpsk/netbox-kea-ng/commit/286f374fe2a7b5c79dbb5d057a3cbaaf211197ea))
+
+### Refactoring
+
+- Make every private name that another module imports public
+  ([`119fd62`](https://github.com/marcinpsk/netbox-kea-ng/commit/119fd62a71df4803e3baa362d2543066b8b768fe))
+
+- **views**: Drop the login mixin behind the gate and share the writable set
+  ([`528d0db`](https://github.com/marcinpsk/netbox-kea-ng/commit/528d0db4c2bef4e7ed3715a90a432b39c9c88fdc))
+
+- **views**: One Server access gate for every Server view
+  ([`44ded7f`](https://github.com/marcinpsk/netbox-kea-ng/commit/44ded7f29ac92e7d42a5c52cb020f1ef1f48a0c7))
+
+### Testing
+
+- **branching**: Expect no Create Reservation link on the IP page in a branch
+  ([`06b4320`](https://github.com/marcinpsk/netbox-kea-ng/commit/06b4320d2b9d375869bf473edc95a32f0fadd25e))
+
+
 ## v3.14.0 (2026-11-12)
 
 ### Bug Fixes
