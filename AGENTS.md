@@ -201,7 +201,7 @@ except in tests, migrations, and `__init__.py`.
 URL request
   → urls.py             (routes to view classes)
   → views/              (view modules; each Kea client lives in a `with` block or a holder that closes it)
-      _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
+      _base.py          (ConditionalLoginRequiredMixin, the change runners, shared helpers)
       notices.py        (the one notice rule of a read: notice(), load_snapshot(), load_target() and the channels; ADR 0003)
       read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
       server.py         (Server CRUD, status tab)
@@ -213,7 +213,7 @@ URL request
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
       combined.py       (cross-server dashboard, reservations, subnets; the lease Server chooser)
-      server_scope.py   (Server selection, view permissions, and family availability)
+      server_scope.py   (the Server access gate, Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       manual_sync_presenter.py (the one presentation of a Manual Sync outcome: messages, row replies, notes)
@@ -507,7 +507,7 @@ classification is exempt by name: `change_outcome.mutate` and `config_write._tes
   mutation warning for the same cause, so the guidance shows once.
 - A refused Lease query (`LeaseQueryGuardError`) and a `ValueError` still raise. A site catches only a `ValueError`
   that it can raise (a bad selection) and shows an accurate message for it. A view that builds a client itself uses
-  `_client_or_refusal()` in `views/_base.py`, and `_client_settings_refusal()` checks the client settings before a
+  `client_or_refusal()` in `views/_base.py`, and `client_settings_refusal()` checks the client settings before a
   change. Both give the message that names the client settings. A combined page adds these errors to the
   `ServerNotices` lists itself.
 - Three OpenGrep rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`,
@@ -519,11 +519,11 @@ classification is exempt by name: `change_outcome.mutate` and `config_write._tes
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
 `persisted`/`failed`/`not-requested`) or raises `ChangeRejected` with a reason.
-A view runs it through `_run_change` in `views/_base.py`, which owns the
+A view runs it through `run_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
 delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
-outside `_run_change` and `_run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
+outside `run_change` and `run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
 refuses a broad `except` around a direct `config_write` or `runtime_change` call in a view. Only `config_write` operations take the per-daemon advisory
 lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
@@ -556,7 +556,7 @@ while its delegated prefix stays, and another excluded prefix pairs with the one
 Transfer Document import does not send `user_context`. The OpenGrep rule
 `kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
 bulk Reservation import calls `reservation_edit.save_import` for each entry through
-`_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the
+`run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the
 optional IPAM claim permission once before its first write. It calls `after_apply` after each change returns,
 outside the change callback. The shared import report (`_import_report` in `views/sync_views.py`,
 `inc/import_report.html`) keeps claim failures with their entry, and later entries continue. Pool overlap facts
@@ -571,15 +571,15 @@ Control Agent forward failure or result 5 is `unknown`. Result 2 in a well-forme
 write or a wipe is `unknown`, and on `dhcp-enable` or `dhcp-disable` a rejection; no operation reads Kea after the
 send. A fresh read that does not match the shown Lease,
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
-`target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
-import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
+`target-changed`. A view runs one change through `run_change` and a loop of changes (multi-Lease delete, Lease CSV
+import) through `run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
 IPAM synchronization run only after `applied`, outside the call that classifies the change; a failure there shows a
 separate error. `after_apply.py` holds the shared steps: `write_journal` writes the journal entry in an
 `event_scope.atomic()` unit, `send_signal` sends a robust signal and reads the receiver errors, and each returns a
 `SideEffectStatus` (`events-failed` when the entry or a receiver committed but its events did not dispatch).
 `lease_after_apply()` returns `LeaseAfterApplyFacts` for a Lease add (with its Manual Sync outcome) and a multi-Lease
 delete, and `show_lease_side_effects` in `views/leases.py` presents them. The bulk Lease import sends `lease_added`
-from the `after_applied` hook of `_run_change_loop` (`LeaseImportAfterApply`) and writes one journal entry for the
+from the `after_applied` hook of `run_change_loop` (`LeaseImportAfterApply`) and writes one journal entry for the
 batch. The OpenGrep rule
 `kea-runtime-write-outside-runtime-change` refuses a call to a `KeaClient` runtime write primitive outside
 `runtime_change`.
@@ -642,10 +642,10 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   `ca_url` even when a protocol-specific URL is configured.
 - **Build a client where a failure is handled** — client creation raises `KeaClientSettingsError` on bad
   settings and sends no request. Build it inside the read that `attempt()` runs (kind `misconfigured`), or in a view
-  through `_client_or_refusal()` in `views/_base.py`, which names the client settings and never reports a
+  through `client_or_refusal()` in `views/_base.py`, which names the client settings and never reports a
   connection failure. Never build it at module/class level.
 - **A Kea client lives for one operation.** Build it as the item of a `with`, or through a holder that closes it
-  (`build_client()` in a `with`, `LazyClient`, `WorkerClients`, `_client_or_refusal()`, `_catalogue_client()`).
+  (`build_client()` in a `with`, `LazyClient`, `WorkerClients`, `client_or_refusal()`, `_catalogue_client()`).
   A failed close is logged (`KeaClient.__exit__`). OpenGrep `kea-client-outside-with` refuses any other call.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
@@ -655,7 +655,7 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Run every Kea read through `read_failure.attempt()`**, and a user-facing read in a view through
   `load_snapshot()` or `load_target()` in `views/notices.py`. No code catches `KeaException`,
   `requests.RequestException`, `MalformedKeaReply` or `KeaClientSettingsError` itself (OpenGrep
-  `kea-view-read-ladder`). A Configuration Change or a Runtime Change goes through `_run_change` instead (see
+  `kea-view-read-ladder`). A Configuration Change or a Runtime Change goes through `run_change` instead (see
   "Exception hierarchy").
 - **Use `kea.kea_error_message(exc)` for user-facing Kea error messages**, also in change diagnostics: fixed guidance for result 2 (hook
   library not loaded) and result 128 (daemon not reachable), followed by `Kea replied: <text>` for every result. Show Kea's text, never
@@ -808,6 +808,24 @@ resort, reserved for true external boundaries you cannot run locally.
 - **HTMX pagination**: lease views serve a full page or an HTMX partial from the same
   `get()` via `htmx_partial(request, ...)`. The hidden `page` field uses
   `VeryHiddenInput` (renders empty) to avoid form conflicts.
+- **Server access gate** (`views/server_scope.py`, ADR 0016): every view on a Server `pk` route inherits
+  `ServerAccessMixin` and names the action of its handlers in `server_action` (`"view"` or `"change"`). Each action
+  but view needs view too, and `permitted_servers()` applies the same rule. The gate loads the Server once and
+  applies one refusal rule: an anonymous user gets the login redirect, a Server that the user may not view is 404,
+  and a viewable Server that the user may not change is 403 for a change view. Then it refuses a disabled family.
+  Handlers read `self.server`, and `self.access.can_change` (read once, on first use) when they offer a change; a
+  combined page uses `writable_servers`. The hooks `server_scope_access` (before the lookup, unsafe methods) and
+  `disabled_family_access` keep an action's own refusal. Run Now and the Sync toggle call `server_access()` in their
+  handlers, because `branching.mutation_form` treats each gated change view as a change form. The Server switch
+  calls it too, because the disabled family of the Server that it leaves does not apply. NetBox's Server edit and
+  delete views call it with `"change"` and `"delete"` on a `pk`; their add form and the bulk views keep NetBox's
+  checks. The header Edit and Delete buttons come from `ServerAccess.permitted_actions`. Only `server_scope` reads a
+  Server permission (OpenGrep `kea-server-permission-outside-server-scope`): other code gets permitted Servers from
+  `permitted_servers()`. The custom `bulk_delete_lease_from_server` check with `obj=` is the exception.
+  `test_server_access.py` checks the rule on every Server route and fails for a view that does not declare
+  `server_action`.
+- **Private names**: a name that starts with `_` is private to its module. Make it public when another module
+  imports it (OpenGrep `kea-private-name-import`, production code only).
 - **View registration**: standard CRUD uses `@register_model_view(Server)` /
   `@register_model_view(Server, "edit")`; `get_model_urls("netbox_kea", "server")`
   auto-generates detail/edit/delete/changelog/journal. Custom routes (leases,

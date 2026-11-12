@@ -37,7 +37,7 @@ from django.urls import reverse
 from ..constants import Family
 from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
-from ..views.subnets import _NO_SUBNET_CIDR
+from ..views.subnets import NO_SUBNET_CIDR
 from .kea_stub import (
     READ_FAILURES,
     Applied,
@@ -3078,7 +3078,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             with self.subTest(name):
                 messages, kea = self._post(url, {}, _change_responses(_subnet_1()))
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(messages, [(django_messages.ERROR, _NO_SUBNET_CIDR)])
+                self.assertEqual(messages, [(django_messages.ERROR, NO_SUBNET_CIDR)])
 
     def test_a_pool_add_without_the_cidr_is_a_form_error(self):
         url = reverse(

@@ -1222,7 +1222,7 @@ def _edited_arguments(raw: Mapping[str, Any], fresh: Lease, edit: LeaseEdit) -> 
     return body
 
 
-def _creation_arguments(request: LeaseRequest) -> dict[str, Any]:
+def creation_arguments(request: LeaseRequest) -> dict[str, Any]:
     """Return the ``lease{4,6}-add`` arguments; an omitted fact stays Kea's to supply."""
     body: dict[str, Any] = {"ip-address": str(request.address)}
     if isinstance(request, DHCPv4LeaseRequest):

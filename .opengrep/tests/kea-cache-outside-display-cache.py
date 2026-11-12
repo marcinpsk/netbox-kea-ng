@@ -19,13 +19,13 @@ from netbox_kea import display_cache as absolute_cache
 
 from . import display_cache as relative_cache
 
-# ruleid: kea-cache-outside-display-cache
+# ruleid: kea-cache-outside-display-cache, kea-private-name-import
 from .display_cache import _generation
 
-# ruleid: kea-cache-outside-display-cache
+# ruleid: kea-cache-outside-display-cache, kea-private-name-import
 from ..display_cache import _entry_key
 
-# ruleid: kea-cache-outside-display-cache
+# ruleid: kea-cache-outside-display-cache, kea-private-name-import
 from netbox_kea.display_cache import _generation_key, cached
 
 # ok: kea-cache-outside-display-cache
@@ -34,7 +34,7 @@ from .display_cache import cached, rotate_after_write, rotate_configuration
 # ok: kea-cache-outside-display-cache
 from ..display_cache import KEY_PREFIX
 
-# ruleid: kea-cache-outside-display-cache
+# ruleid: kea-cache-outside-display-cache, kea-private-name-import
 from .display_cache import (
     cached as cached_again,
     _rotate,

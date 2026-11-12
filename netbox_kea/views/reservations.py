@@ -46,10 +46,11 @@ from ..subnet_catalogue import CatalogueSnapshot
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from ._base import IPAM_UNREADABLE, _client_settings_refusal, _safe_return_url, sync_title
+from ._base import IPAM_UNREADABLE, client_settings_refusal, safe_return_url, sync_title
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
-from .workspace import FamilyRouteMixin, ServerFamilyMixin
+from .server_scope import ServerAccessMixin
+from .workspace import FamilyRouteMixin
 
 logger = logging.getLogger(__name__)
 
@@ -420,14 +421,11 @@ def _sync_title(ownership: Iterable[Ownership]) -> str:
 
 
 def _reservation_list_context(
-    request: HttpRequest,
-    server: Server,
-    version: Family,
+    request: HttpRequest, server: Server, version: Family, *, can_change: bool
 ) -> dict[str, Any]:
     """Fetch and present one bounded typed Reservation page."""
     search_form = forms.ReservationSearchForm(request.GET or None)
     filters = search_form.cleaned_data if search_form.is_valid() else {}
-    can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
     query = ReservationQuery(
         cursor=request.GET.get("cursor"), mutations=can_change, refresh=refresh_requested(request), **filters
     )
@@ -443,7 +441,7 @@ def _reservation_list_context(
     else:
         read_started = None if isinstance(read.loaded, Notice) else read.loaded.read_started
     search_form.offer_subnets(forms.subnet_id_options(read.catalogue.subnet_choices if read.catalogue else ()))
-    presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
+    presented = present(request.user, server, read, return_url=safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.
     hook_available = not (presented.notice is not None and presented.notice.unsupported_command)
     bulk_sync = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
@@ -465,7 +463,7 @@ def _reservation_list_context(
         "mutation_unavailable": hook_available and bool(presented.mutation_unavailable_reason),
         "mutation_unavailable_reason": presented.mutation_unavailable_reason,
         "add_url": reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
-        + f"?{urlencode({'return_url': _safe_return_url(request, request.get_full_path())})}"
+        + f"?{urlencode({'return_url': safe_return_url(request, request.get_full_path())})}"
         if presented.can_mutate
         else None,
         "bulk_sync_url": reverse(
@@ -487,7 +485,7 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     format_name = request.GET.get("export")
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
-    if refusal := _client_settings_refusal(server, version):
+    if refusal := client_settings_refusal(server, version):
         return HttpResponse(refusal, status=500, content_type="text/plain")
     loaded = load_snapshot(server, "reservation", lambda: reservation_reads.read_snapshot(server, version))
     if isinstance(loaded, Notice):
@@ -510,9 +508,10 @@ RESERVATIONS_TAB = OptionalViewTab(
 
 
 @register_model_view(Server, "reservations_tab", path="reservations4", kwargs={"family": 4})
-class ServerReservationsView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerReservationsView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Show bounded Reservation Snapshots of one family."""
 
+    server_action = "view"
     workspace_section = "reservations"
 
     queryset = Server.objects.all()
@@ -521,11 +520,10 @@ class ServerReservationsView(FamilyRouteMixin, ServerFamilyMixin, generic.Object
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Redirect v6-only servers, export, or render the list."""
-        instance = self.get_object(**kwargs)
         if "export" in request.GET:
-            return _reservation_export_response(request, instance, self.dhcp_version)
+            return _reservation_export_response(request, self.server, self.dhcp_version)
         return super().get(request, **kwargs)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Return the typed list context of the route family."""
-        return _reservation_list_context(request, instance, self.dhcp_version)
+        return _reservation_list_context(request, instance, self.dhcp_version, can_change=self.access.can_change)

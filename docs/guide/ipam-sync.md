@@ -136,7 +136,11 @@ permission that the Sync can use. An enabled ObjectPermission of the user, or of
 | Lease **Sync**, lease add with **Sync to NetBox IPAM** | `ipam.add_ipaddress`, `ipam.change_ipaddress`, `dcim.add_macaddress`, `dcim.change_macaddress` |
 | Lease **Sync** of a DHCPv6 delegated prefix | `ipam.add_prefix`, `ipam.change_prefix` |
 | Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM**, Reservation import with **Sync to NetBox** | The same as for a lease |
-| **Sync to DHCP plugin now** | The same as for a lease, `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, change permission on the Server, and the `netbox_dhcp` permissions below |
+| **Sync to DHCP plugin now** | The same as for a lease, `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, view and change permission on the Server, and the `netbox_dhcp` permissions below |
+| **Run Now**, **Enable Sync** and **Disable Sync** on the Sync tab of a Server | View and change permission on the Server only |
+
+**Run Now** needs no IPAM grant, so the rule above does not apply to it. A user who may view and change the Server can
+switch its IPAM sync on, and the scheduled run then makes the same writes.
 
 **Sync All to NetBox** runs only the reservation phase. Its stale cleanup cannot delete an IP address, so it needs no
 delete permission. When a user does not have a required grant, the Sync control is disabled. Its tooltip names each

@@ -8,6 +8,7 @@ import strawberry_django
 from netbox.graphql.types import NetBoxObjectType
 
 from . import models
+from .views.server_scope import permitted_servers
 
 if TYPE_CHECKING:
     # strawberry.lazy resolves the type at runtime; this is for the linters.
@@ -58,7 +59,7 @@ class Query:
     @strawberry.field
     def server(self, id: int, info: strawberry.types.Info) -> ServerType:  # noqa: A002 - published GraphQL argument name
         """Return a single Server by primary key."""
-        return models.Server.objects.restrict(info.context.request.user, "view").get(pk=id)
+        return permitted_servers(info.context.request.user).get(pk=id)
 
     server_list: list[ServerType] = strawberry_django.field()
 

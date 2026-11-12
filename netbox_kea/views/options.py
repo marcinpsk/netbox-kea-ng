@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode as _urlencode
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.http import HttpResponse
@@ -12,7 +13,7 @@ from django.urls import reverse
 from django.views import View
 from utilities.views import register_model_view
 
-from .. import config_write, forms, server_configuration
+from .. import branching, config_write, forms, server_configuration
 from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import (
@@ -29,20 +30,20 @@ from ..utilities import OptionalViewTab
 from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
-    _KeaChangeMixin,
-    _run_change,
-    _safe_return_url,
     daemon_version,
+    run_change,
+    safe_return_url,
 )
 from .notices import notice, show_notices
-from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
-from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, ServerFamilyMixin, subsection_nav
+from .server_scope import ServerAccess, ServerAccessMixin, permitted_servers
+from .subnets import NO_SUBNET_CIDR, SUBNETS_TAB, displayed_subnet
+from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, subsection_nav
 
 # One Config tab for both sections and both families; ServerOptionDefView owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
-def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
+def config_nav_context(access: ServerAccess, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build the Config tab and the subsection navigation of the Configuration section.
 
     ``section`` is ``"options"`` (the server DHCP Option editor) or ``"configuration"`` (the Option Definitions).
@@ -50,7 +51,7 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
     return {
         "tab": _CONFIG_TAB,
         "dhcp_version": dhcp_version,
-        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], server_pk, dhcp_version),
+        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], access, dhcp_version),
     }
 
 
@@ -61,21 +62,20 @@ def _run_option_change(
     try:
         rows = forms.option_rows(formset)
         edit = option_row_edit(rows, posted_snapshot(rows))
-        _run_change(request, confirmed, lambda: change(edit))
+        run_change(request, confirmed, lambda: change(edit))
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         formset._non_form_errors = formset.error_class([exc.message])
         return False
     return True
 
 
-class ServerSubnetOptionsEditView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit the DHCP Options of one Subnet."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
-    tab = _SUBNETS_TAB
+    tab = SUBNETS_TAB
 
     def _get_subnet_from_config(
         self, request: HttpRequest, server: Server, subnet_id: int
@@ -90,14 +90,11 @@ class ServerSubnetOptionsEditView(
 
     def get(self, request, pk: int, subnet_id: int):
         """Render the DHCP Option form of the Subnet."""
-        server = get_object_or_404(
-            Server.objects.restrict(request.user, "change"),
-            pk=pk,
-        )
-        return_url = _safe_return_url(
+        server = self.server
+        return_url = safe_return_url(
             request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
-        catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        catalogue, verified = displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if verified is None:
             reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
             messages.error(
@@ -143,17 +140,14 @@ class ServerSubnetOptionsEditView(
 
     def post(self, request, pk: int, subnet_id: int):
         """Write the DHCP Options of the Subnet."""
-        server = get_object_or_404(
-            Server.objects.restrict(request.user, "change"),
-            pk=pk,
-        )
-        return_url = _safe_return_url(
+        server = self.server
+        return_url = safe_return_url(
             request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
         formset = forms.DHCPOptionRowFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
-            messages.error(request, _NO_SUBNET_CIDR)
+            messages.error(request, NO_SUBNET_CIDR)
             return redirect(return_url)
         cidr: str = form.cleaned_data["subnet_cidr"]
         if not formset.is_valid():
@@ -173,11 +167,10 @@ class ServerSubnetOptionsEditView(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ServerDHCPOptionsEditView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerDHCPOptionsEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit the server-global DHCP Options of one family."""
 
+    server_action = "change"
     workspace_section = "configuration"
     workspace_subsection = "options"
 
@@ -190,10 +183,7 @@ class ServerDHCPOptionsEditView(
 
     def get(self, request, pk: int):
         """Render the server DHCP Option form."""
-        server = get_object_or_404(
-            Server.objects.restrict(request.user, "change"),
-            pk=pk,
-        )
+        server = self.server
         existing = self._get_options_from_config(request, server)
         if existing is None:
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
@@ -208,16 +198,13 @@ class ServerDHCPOptionsEditView(
                 "server": server,
                 "formset": formset,
                 "return_url": reverse("plugins:netbox_kea:server", args=[pk]),
-                **config_nav_context(server.pk, "options", self.dhcp_version),
+                **config_nav_context(self.access, "options", self.dhcp_version),
             },
         )
 
     def post(self, request, pk: int):
         """Write the server DHCP Options."""
-        server = get_object_or_404(
-            Server.objects.restrict(request.user, "change"),
-            pk=pk,
-        )
+        server = self.server
         return_url = reverse("plugins:netbox_kea:server", args=[pk])
         formset = forms.DHCPOptionRowFormSet(request.POST)
         if not formset.is_valid():
@@ -229,7 +216,7 @@ class ServerDHCPOptionsEditView(
                     "server": server,
                     "formset": formset,
                     "return_url": return_url,
-                    **config_nav_context(server.pk, "options", self.dhcp_version),
+                    **config_nav_context(self.access, "options", self.dhcp_version),
                 },
             )
 
@@ -247,7 +234,7 @@ class ServerDHCPOptionsEditView(
                     "server": server,
                     "formset": formset,
                     "return_url": return_url,
-                    **config_nav_context(server.pk, "options", self.dhcp_version),
+                    **config_nav_context(self.access, "options", self.dhcp_version),
                 },
             )
         return redirect(return_url)
@@ -258,51 +245,59 @@ class ServerDHCPOptionsEditView(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
-    """Show Kea servers with pre-filled 'Create reservation' links for a NetBox IPAddress.
+@dataclass(frozen=True)
+class ReservationLinks:
+    """The Create Reservation links of one NetBox IP address, one for each Server of its family that the user may change.
 
-    Accessible at /plugins/kea/ip-addresses/<id>/kea-reservations/.
-    Rendered as a standalone page and also embedded via the IPAddress template extension.
+    Each entry holds the Server and its link, or no link while a branch is active: Server rows exist in main only, and
+    a Reservation add is refused in a branch.
+    """
+
+    family: Family
+    in_branch: bool
+    entries: list[dict[str, Any]]
+
+
+def reservation_links(user: Any, nb_ip: Any) -> ReservationLinks:
+    """Return the Create Reservation links of *nb_ip* for *user*."""
+    ip_str = str(nb_ip.address.ip)
+    family: Family = 6 if ":" in ip_str else 4
+    in_branch = branching.active_branch() is not None
+    servers = permitted_servers(user, "change").filter(**{f"dhcp{family}": True}).order_by("name")
+    params = urlencode({"ip_addresses" if family == 6 else "ip_address": ip_str, "hostname": nb_ip.dns_name or ""})
+    entries = [
+        {
+            "server": server,
+            "url": None
+            if in_branch
+            else reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": family})
+            + f"?{params}",
+        }
+        for server in servers
+    ]
+    return ReservationLinks(family, in_branch, entries)
+
+
+class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
+    """Show the Kea Servers with pre-filled 'Create reservation' links for a NetBox IPAddress.
+
+    Accessible at /plugins/kea/ip-addresses/<id>/kea-reservations/. The IPAddress panel shows the same links.
     """
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:  # noqa: D102
         from ipam.models import IPAddress as NbIP
 
         nb_ip = get_object_or_404(NbIP.objects.restrict(request.user, "view"), pk=pk)
-        ip_str = str(nb_ip.address.ip)
-        is_v6 = ":" in ip_str
-        version = 6 if is_v6 else 4
-
-        if version == 4:
-            servers = Server.objects.restrict(request.user, "change").filter(dhcp4=True)
-        else:
-            servers = Server.objects.restrict(request.user, "change").filter(dhcp6=True)
-
-        server_links = []
-        for server in servers:
-            base_url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
-            ip_param = "ip_addresses" if version == 6 else "ip_address"
-            params = _urlencode(
-                {
-                    ip_param: ip_str,
-                    "hostname": nb_ip.dns_name or "",
-                }
-            )
-            server_links.append(
-                {
-                    "server": server,
-                    "url": f"{base_url}?{params}",
-                }
-            )
-
+        links = reservation_links(request.user, nb_ip)
         return render(
             request,
             "netbox_kea/ip_kea_reservations.html",
             {
                 "object": nb_ip,
                 "nb_ip": nb_ip,
-                "server_links": server_links,
-                "version": version,
+                "server_links": links.entries,
+                "in_branch": links.in_branch,
+                "version": links.family,
             },
         )
 
@@ -314,7 +309,7 @@ def _daemon_online(server: Server, version: Family) -> bool:
     return not isinstance(read, ReadFailure)
 
 
-class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
+class CombinedServerStatusBadgeView(ServerAccessMixin, View):
     """HTMX endpoint: lightweight status fragment for one server.
 
     Returns a small HTML snippet containing one badge per enabled DHCP
@@ -326,9 +321,12 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
     combined dashboard so the main page stays fast.
     """
 
+    server_action = "view"
+    family_scoped = False
+
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Return status badge fragment for server *pk*."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
 
         families: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
         statuses = [
@@ -348,20 +346,21 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
 
 
 @register_model_view(Server, "option_def_tab", path="dhcp4/option-def", kwargs={"family": 4})
-class ServerOptionDefView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerOptionDefView(FamilyRouteMixin, ServerAccessMixin, View):
     """List the Option Definitions of one family of a Kea Server."""
 
+    server_action = "view"
     workspace_section = "configuration"
 
     tab = _CONFIG_TAB
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the Option Definition list."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         snapshot = server_configuration.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         # Add delete URLs here because templates do not construct dynamic URL names.
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
+        can_change = self.access.can_change
         enriched_defs = []
         for opt in snapshot.option_definitions:
             entry = {
@@ -386,7 +385,7 @@ class ServerOptionDefView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
             "can_change": can_change,
             # An unavailable Snapshot shows its error instead of an empty list.
             "definitions_known": not snapshot.unavailable,
-            **config_nav_context(server.pk, "configuration", self.dhcp_version),
+            **config_nav_context(self.access, "configuration", self.dhcp_version),
         }
         if can_change:
             ctx["add_url"] = reverse(
@@ -395,9 +394,10 @@ class ServerOptionDefView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
         return render(request, "netbox_kea/server_option_def_list.html", ctx)
 
 
-class ServerOptionDefAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerOptionDefAddView(FamilyRouteMixin, ServerAccessMixin, View):
     """Add a custom option definition to a Kea server."""
 
+    server_action = "change"
     workspace_section = "configuration"
 
     tab = _CONFIG_TAB
@@ -407,7 +407,7 @@ class ServerOptionDefAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the add Option Definition form."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        server = self.server
         form = forms.OptionDefForm(initial={"space": f"dhcp{self.dhcp_version}"})
         return render(
             request,
@@ -424,7 +424,7 @@ class ServerOptionDefAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Validate and create the option definition."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        server = self.server
         form = forms.OptionDefForm(request.POST)
         if not form.is_valid():
             return render(
@@ -447,7 +447,7 @@ class ServerOptionDefAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        _run_change(
+        run_change(
             request,
             f"Option definition '{option_def['name']}' (code {option_def['code']}) added.",
             lambda: config_write.add_option_definition(server, self.dhcp_version, option_def),
@@ -455,14 +455,13 @@ class ServerOptionDefAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
         return redirect(self._success_url(server))
 
 
-class ServerOptionDefDeleteView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerOptionDefDeleteView(FamilyRouteMixin, ServerAccessMixin, View):
     """Delete a custom option definition from a Kea server.
 
     The option code and space are passed as URL kwargs.
     """
 
+    server_action = "change"
     workspace_section = "configuration"
 
     tab = _CONFIG_TAB
@@ -472,7 +471,7 @@ class ServerOptionDefDeleteView(
 
     def get(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Render the delete-confirmation page."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        server = self.server
         return render(
             request,
             "netbox_kea/server_option_def_delete.html",
@@ -489,8 +488,8 @@ class ServerOptionDefDeleteView(
 
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        _run_change(
+        server = self.server
+        run_change(
             request,
             f"Option definition code={code} space={space} deleted.",
             lambda: config_write.delete_option_definition(server, self.dhcp_version, code, space),

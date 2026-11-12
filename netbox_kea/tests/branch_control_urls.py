@@ -11,7 +11,7 @@ from django.views import View
 from netbox.urls import urlpatterns as netbox_urlpatterns
 
 from netbox_kea.branching import BranchRefusalMiddleware
-from netbox_kea.views._base import _KeaChangeMixin
+from netbox_kea.views.server_scope import ServerAccessMixin
 
 GZipAlias = GZipMiddleware
 RefusalAlias = BranchRefusalMiddleware
@@ -80,8 +80,10 @@ def read(request):
     return response
 
 
-class ChangeView(_KeaChangeMixin, View):
+class ChangeView(ServerAccessMixin, View):
     """A newly registered change form needs no UI-specific annotation."""
+
+    server_action = "change"
 
     def get(self, request):
         return HttpResponse('<form method="post"><button>Save</button></form>')
