@@ -51,7 +51,7 @@ from netbox_kea.leases import (
     LeaseQuery,
     LeaseSnapshot,
     MalformedLeaseResponse,
-    _creation_arguments,
+    creation_arguments,
     parse_lease_query,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
@@ -934,7 +934,7 @@ class TestLeaseChanges(TestCase):
                 with stub_kea(daemon.responses()) as kea:
                     self.assertIsNone(self.client.lease_add(creation))
                 self.assertEqual(kea.commands(), [f"lease{family}-add"])
-                self.assertEqual(kea.bodies(f"lease{family}-add")[0]["arguments"], _creation_arguments(creation))
+                self.assertEqual(kea.bodies(f"lease{family}-add")[0]["arguments"], creation_arguments(creation))
 
     def test_a_refused_creation_raises(self):
         creation = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50")

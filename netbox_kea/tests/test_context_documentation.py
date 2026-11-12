@@ -31,7 +31,10 @@ def test_agent_architecture_lists_server_scope():
     """Document the owner of combined Server selection and family availability."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
     architecture = agents.split("## Architecture", 1)[1].split("### Core components", 1)[0]
-    assert "server_scope.py   (Server selection, view permissions, and family availability)" in architecture
+    assert (
+        "server_scope.py   (the Server access gate, Server selection, view permissions, and family availability)"
+        in architecture
+    )
 
 
 def test_agent_sync_lifecycle_uses_the_current_ownership_interfaces():

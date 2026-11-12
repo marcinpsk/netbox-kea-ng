@@ -9,13 +9,15 @@ from netbox.views import generic
 
 from .. import forms, runtime_change
 from ..models import Server
-from ._base import _KeaChangeMixin, _run_change
-from .workspace import FamilyRouteMixin, ServerFamilyMixin, server_family_url
+from ._base import run_change
+from .server_scope import ServerAccessMixin
+from .workspace import FamilyRouteMixin, server_family_url
 
 
-class ServerDHCPEnableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerDHCPEnableView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Confirm and re-enable a Kea DHCP service that was disabled."""
 
+    server_action = "change"
     workspace_section = "overview"
 
     queryset = Server.objects.all()
@@ -27,8 +29,8 @@ class ServerDHCPEnableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         """Re-enable the service."""
-        instance = self.get_object(pk=pk)
-        _run_change(
+        instance = self.server
+        run_change(
             request,
             f"DHCPv{self.dhcp_version} service re-enabled on {instance}.",
             lambda: runtime_change.enable_dhcp(instance, self.dhcp_version),
@@ -36,9 +38,10 @@ class ServerDHCPEnableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
         return redirect(server_family_url(request, instance, "server"))
 
 
-class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerDHCPDisableView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Confirm and disable a Kea DHCP service for a time."""
 
+    server_action = "change"
     workspace_section = "overview"
 
     queryset = Server.objects.all()
@@ -51,7 +54,7 @@ class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         """Disable the service."""
-        instance = self.get_object(pk=pk)
+        instance = self.server
         form = forms.DHCPDisableForm(request.POST)
         if not form.is_valid():
             return render(
@@ -61,7 +64,7 @@ class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin
             )
         max_period = form.cleaned_data.get("max_period")
         period = f" for up to {max_period}s" if max_period else ""
-        _run_change(
+        run_change(
             request,
             f"DHCPv{self.dhcp_version} disabled on {instance}{period}.",
             lambda: runtime_change.disable_dhcp(instance, self.dhcp_version, max_period),

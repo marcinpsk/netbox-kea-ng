@@ -522,7 +522,7 @@ class TestDhcpPluginSync(_PermissionTestBase):
         _grant([Server], ["view"], user=viewer)
         _grant([Prefix, IPRange, IPAddress, MACAddress], ["add", "change"], user=viewer)
         self.client.force_login(viewer)
-        self._assert_import_refused(self._post(), "Sync to DHCP plugin needs change permission on this Server.")
+        self._assert_import_refused(self._post(), "You do not have permission to modify Kea server data.")
 
 
 class TestDhcpPluginSyncWithThePlugin(_PermissionTestBase):

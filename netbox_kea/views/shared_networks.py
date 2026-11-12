@@ -5,7 +5,7 @@ from typing import Any
 from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
@@ -15,25 +15,24 @@ from .. import config_write, forms, managed_fields, server_configuration, tables
 from ..models import Server
 from ..utilities import export_table
 from ._base import (
-    ConditionalLoginRequiredMixin,
-    _KeaChangeMixin,
-    _run_change,
-    _safe_return_url,
+    run_change,
+    safe_return_url,
 )
 from .notices import notice, show_notices
-from .server_scope import writable_servers
+from .server_scope import ServerAccessMixin
 from .subnet_lists import fetch_shared_networks, present_shared_networks
-from .subnets import _SUBNETS_TAB, subnets_nav_context
-from .workspace import FamilyRouteMixin, ServerFamilyMixin
+from .subnets import SUBNETS_TAB, subnets_nav_context
+from .workspace import FamilyRouteMixin
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ServerSharedNetworksView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectChildrenView):
+class ServerSharedNetworksView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectChildrenView):
     """Read-only tab listing shared networks from the Kea config."""
 
+    server_action = "view"
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
@@ -43,12 +42,12 @@ class ServerSharedNetworksView(FamilyRouteMixin, ServerFamilyMixin, generic.Obje
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Render the Shared Network table, or export it."""
-        instance = self.get_object(**kwargs)
+        instance = self.server
         presented = present_shared_networks(
             instance,
             fetch_shared_networks(instance, self.dhcp_version),
-            writable=writable_servers(request.user, [instance]),
-            return_url=_safe_return_url(request, request.get_full_path()),
+            writable=self.access.writable,
+            return_url=safe_return_url(request, request.get_full_path()),
         )
         table_data = self.prep_table_data(request, presented.rows, instance)
         table = self.get_table(table_data, request, False)
@@ -81,20 +80,19 @@ class ServerSharedNetworksView(FamilyRouteMixin, ServerFamilyMixin, generic.Obje
                     "plugins:netbox_kea:server_shared_network_add",
                     kwargs={"pk": instance.pk, "family": self.dhcp_version},
                 ),
-                **subnets_nav_context(instance.pk, "shared_networks", self.dhcp_version),
+                **subnets_nav_context(self.access, "shared_networks", self.dhcp_version),
             },
         )
 
 
-class ServerSharedNetworkAddView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerSharedNetworkAddView(FamilyRouteMixin, ServerAccessMixin, View):
     """Add a new shared network to a Kea server."""
 
+    server_action = "change"
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    tab = _SUBNETS_TAB
+    tab = SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
         return reverse(
@@ -103,7 +101,7 @@ class ServerSharedNetworkAddView(
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the add-network form."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         form = forms.SharedNetworkForm()
         return render(
             request,
@@ -113,14 +111,14 @@ class ServerSharedNetworkAddView(
                 "server": server,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": _safe_return_url(request, self._success_url(server)),
+                "cancel_url": safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Validate and create the shared network."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         form = forms.SharedNetworkForm(request.POST)
         if not form.is_valid():
             return render(
@@ -131,32 +129,31 @@ class ServerSharedNetworkAddView(
                     "server": server,
                     "form": form,
                     "dhcp_version": self.dhcp_version,
-                    "cancel_url": _safe_return_url(request, self._success_url(server)),
+                    "cancel_url": safe_return_url(request, self._success_url(server)),
                     "tab": self.tab,
                 },
             )
         name = form.cleaned_data["name"]
-        _run_change(
+        run_change(
             request,
             f"Shared network '{name}' created.",
             lambda: config_write.add_shared_network(server, self.dhcp_version, name),
         )
-        return redirect(_safe_return_url(request, self._success_url(server)))
+        return redirect(safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetworkDeleteView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerSharedNetworkDeleteView(FamilyRouteMixin, ServerAccessMixin, View):
     """Delete a shared network from a Kea server.
 
     The network name is passed as a URL kwarg ``network_name``.  Subnets that
     belonged to the deleted network fall back to the global address pool.
     """
 
+    server_action = "change"
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    tab = _SUBNETS_TAB
+    tab = SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
         return reverse(
@@ -165,7 +162,7 @@ class ServerSharedNetworkDeleteView(
 
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the delete-confirmation page."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         return render(
             request,
             "netbox_kea/server_shared_network_delete.html",
@@ -174,31 +171,30 @@ class ServerSharedNetworkDeleteView(
                 "server": server,
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": _safe_return_url(request, self._success_url(server)),
+                "cancel_url": safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
 
     def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Delete the shared network."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        _run_change(
+        server = self.server
+        run_change(
             request,
             f"Shared network '{network_name}' deleted.",
             lambda: config_write.delete_shared_network(server, self.dhcp_version, network_name),
         )
-        return redirect(_safe_return_url(request, self._success_url(server)))
+        return redirect(safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetworkEditView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerSharedNetworkEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit a Shared Network's managed configuration fields."""
 
+    server_action = "change"
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    tab = _SUBNETS_TAB
+    tab = SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
         return reverse(
@@ -207,14 +203,14 @@ class ServerSharedNetworkEditView(
 
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the edit form pre-populated with current values."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         show_notices(request, notice(configuration))
         network = server_configuration.editable_shared_network(configuration, network_name)
         shown = None if network is None else managed_fields.shown_shared_network(network, self.dhcp_version)
         if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
-            return redirect(_safe_return_url(request, self._success_url(server)))
+            return redirect(safe_return_url(request, self._success_url(server)))
 
         form = forms.SharedNetworkEditForm(
             initial={"name": network_name, **forms.SharedNetworkEditForm.initial_for(shown)}
@@ -227,14 +223,14 @@ class ServerSharedNetworkEditView(
                 "form": form,
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": _safe_return_url(request, self._success_url(server)),
+                "cancel_url": safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
 
     def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Validate form and apply the shared network update."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         form = forms.SharedNetworkEditForm(request.POST)
         if not form.is_valid():
             return render(
@@ -245,15 +241,15 @@ class ServerSharedNetworkEditView(
                     "form": form,
                     "network_name": network_name,
                     "dhcp_version": self.dhcp_version,
-                    "cancel_url": _safe_return_url(request, self._success_url(server)),
+                    "cancel_url": safe_return_url(request, self._success_url(server)),
                     "tab": self.tab,
                 },
             )
 
         edit, shown = form.to_edit(), form.shown()
-        _run_change(
+        run_change(
             request,
             f"Shared network '{network_name}' updated.",
             lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),
         )
-        return redirect(_safe_return_url(request, self._success_url(server)))
+        return redirect(safe_return_url(request, self._success_url(server)))

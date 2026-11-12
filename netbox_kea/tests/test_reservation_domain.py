@@ -32,10 +32,10 @@ from netbox_kea.reservations import (
     ReservationSynchronizationState,
     SetValue,
     SynchronizationLabel,
-    _reservation_to_raw,
     apply_reservation_change,
     reservation_fingerprint,
     reservation_identifier_types,
+    reservation_to_raw,
 )
 from netbox_kea.server_configuration import SubnetConfiguration
 from netbox_kea.subnet_catalogue import (
@@ -1572,7 +1572,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
             reservation = self._read(family, recorded_host(family), cidr)
             with self.subTest(family=family):
                 self.assertLessEqual(
-                    set(_reservation_to_raw(reservation)) - {"user-context"}, kea._MANAGED_RESERVATION_KEYS
+                    set(reservation_to_raw(reservation)) - {"user-context"}, kea._MANAGED_RESERVATION_KEYS
                 )
 
     def test_the_model_refuses_values_that_kea_refuses(self):

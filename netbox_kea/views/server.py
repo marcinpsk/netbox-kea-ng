@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect
 from django.template.loader import render_to_string
@@ -24,9 +25,10 @@ from ..server_connection import service_connections, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import LazyClient, _safe_return_url, daemon_status, daemon_version
+from ._base import LazyClient, daemon_status, daemon_version, safe_return_url
 from .notices import Notice, inline_notices, notice
-from .workspace import ServerFamilyMixin, server_context, with_return_url
+from .server_scope import ServerAccessMixin, server_access
+from .workspace import server_context, with_return_url
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +104,10 @@ def _get_global_options(server: Server) -> tuple[dict[str, list[GlobalOptionRow]
 
 
 @register_model_view(Server)
-class ServerView(ServerFamilyMixin, generic.ObjectView):
+class ServerView(ServerAccessMixin, generic.ObjectView):
     """Detail view for a single Kea Server."""
 
+    server_action = "view"
     queryset = Server.objects.all()
 
 
@@ -116,6 +119,12 @@ class ServerEditView(generic.ObjectEditView):
     template_name = "netbox_kea/server_edit.html"
     form = forms.ServerForm
 
+    def dispatch(self, request, *args, **kwargs):
+        """Apply the refusal rule of the gate to an edit; the add form keeps NetBox's check."""
+        if "pk" in kwargs and isinstance(refusal := server_access(request, kwargs["pk"], "change"), HttpResponse):
+            return refusal
+        return super().dispatch(request, *args, **kwargs)
+
 
 @register_model_view(Server, "delete")
 class ServerDeleteView(generic.ObjectDeleteView):
@@ -124,6 +133,12 @@ class ServerDeleteView(generic.ObjectDeleteView):
     template_name = "netbox_kea/server_delete.html"
 
     queryset = Server.objects.all()
+
+    def dispatch(self, request, *args, **kwargs):
+        """Apply the refusal rule of the gate to a delete."""
+        if isinstance(refusal := server_access(request, kwargs["pk"], "delete"), HttpResponse):
+            return refusal
+        return super().dispatch(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
         """Keep the scope inside the native modal's selected deletion form."""
@@ -192,20 +207,24 @@ class ServerBulkImportView(generic.BulkImportView):
 
 
 @register_model_view(Server, "status")
-class ServerStatusRedirectView(generic.ObjectView):
+class ServerStatusRedirectView(ServerAccessMixin, generic.ObjectView):
     """Send the former Status entry point to the Server Overview."""
 
+    server_action = "view"
+    family_scoped = False
     queryset = Server.objects.all()
 
     def get(self, request: HttpRequest, **kwargs):
-        """Preserve native view permission checks before redirecting."""
-        return redirect(self.get_object(**kwargs).get_absolute_url())
+        """Redirect after the gate."""
+        return redirect(self.server.get_absolute_url())
 
 
 @register_model_view(Server, "status_data")
-class ServerStatusView(generic.ObjectView):
+class ServerStatusView(ServerAccessMixin, generic.ObjectView):
     """Server status tab: shows daemon uptime, versions and HA state."""
 
+    server_action = "view"
+    family_scoped = False
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_status.html"
 
@@ -246,7 +265,7 @@ class ServerStatusView(generic.ObjectView):
         # Build the services list from the configured service URLs (config-driven),
         # not from live status data. This ensures enable/disable buttons always render
         # even when the status fetch fails.
-        return_url = _safe_return_url(request, "")
+        return_url = safe_return_url(request, "")
         services = [
             {
                 "name": name,
@@ -260,10 +279,9 @@ class ServerStatusView(generic.ObjectView):
             services.insert(0, {"name": "Control Agent", "status_data": statuses.get("Control Agent", {})})
 
         global_options, notices = _get_global_options(instance)
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
             "global_options": global_options,
             "inline_notices": inline_notices(*notices),
-            "can_change_server": can_change,
+            "can_change_server": self.access.can_change,
         }

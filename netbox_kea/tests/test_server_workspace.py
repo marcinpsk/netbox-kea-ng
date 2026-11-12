@@ -235,8 +235,8 @@ class TestServerWorkspace(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_delete", args=[self.server.pk]) + "?family=6"
         with stub_kea({}) as kea:
             denied = self.client.get(url, HTTP_HX_REQUEST="true")
-        self.assertEqual(denied.status_code, 403)
-        self.assertNotContains(denied, "kea-modal-workspace-shell", status_code=403)
+        self.assertEqual(denied.status_code, 404)
+        self.assertNotContains(denied, "kea-modal-workspace-shell", status_code=404)
         self.assertEqual(kea.commands(), [])
         hidden = _make_db_server(name="hidden-server")
         permission = ObjectPermission.objects.create(

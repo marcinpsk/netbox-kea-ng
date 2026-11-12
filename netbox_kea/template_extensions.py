@@ -7,13 +7,11 @@ quick links to create host reservations on configured Kea servers, and
 a banner on every plugin page while a netbox-branching branch is active.
 """
 
-from urllib.parse import urlencode
-
 from django.urls import reverse
 from netbox.plugins import PluginTemplateExtension
 
 from . import branching
-from .models import Server
+from .views.options import reservation_links
 
 
 class BranchBanner(PluginTemplateExtension):
@@ -30,8 +28,8 @@ class BranchBanner(PluginTemplateExtension):
 class IPAddressKeaPanel(PluginTemplateExtension):
     """Renders a 'Kea Reservations' panel on the IPAddress detail page.
 
-    Appears on the right side of the page, listing all Kea servers compatible
-    with the IP's address family with pre-filled 'Create Reservation' links.
+    Appears on the right side of the page, listing the Kea servers of the IP's address family that the user may
+    change, with pre-filled 'Create Reservation' links.
     """
 
     model = "ipam.ipaddress"  # NetBox <= 4.0
@@ -44,34 +42,13 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         if not nb_ip.address or not nb_ip.address.ip:
             return ""
 
-        ip_str = str(nb_ip.address.ip)
-        is_v6 = ":" in ip_str
-        version = 6 if is_v6 else 4
-
-        request = self.context["request"]
-        if version == 4:
-            servers = Server.objects.restrict(request.user, "view").filter(dhcp4=True)
-        else:
-            servers = Server.objects.restrict(request.user, "view").filter(dhcp6=True)
-
-        # Server rows exist in main only, and a reservation add is refused in a branch.
-        in_branch = branching.active_branch() is not None
-        server_links = []
-        for server in servers:
-            url = None
-            if not in_branch:
-                ip_param = "ip_addresses" if version == 6 else "ip_address"
-                params = urlencode({ip_param: ip_str, "hostname": nb_ip.dns_name or ""})
-                add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
-                url = f"{add}?{params}"
-            server_links.append({"server": server, "url": url})
-
+        links = reservation_links(self.context["request"].user, nb_ip)
         return self.render(
             "netbox_kea/inc/ip_kea_panel.html",
             extra_context={
-                "server_links": server_links,
-                "in_branch": in_branch,
-                "version": version,
+                "server_links": links.entries,
+                "in_branch": links.in_branch,
+                "version": links.family,
                 "kea_page_url": reverse(
                     "plugins:netbox_kea:ipaddress_kea_reservations",
                     args=[nb_ip.pk],

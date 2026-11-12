@@ -287,6 +287,11 @@ flag are all on. A Run Now of one Server skips the Server switch, but a Run Now 
 not count as an observation of the Server.
 _Avoid_: sync flags, enabled types
 
+**Run Now**:
+An IPAM synchronization run of one Server that an operator starts from the Sync Jobs page. It makes the writes of a
+scheduled run and needs the view and change permissions on the Server, not the manual Sync permission rule.
+_Avoid_: sync now, force sync
+
 **Sync Run Result**:
 The recorded result of one Server in one IPAM synchronization run: Synced (with its counts), Skipped, Interrupted, or
 Unknown.

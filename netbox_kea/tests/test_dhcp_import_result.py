@@ -360,7 +360,7 @@ class LatestRunPageTest(_ImportRunTestCase):
 
         response = self._page()
 
-        self.assertNotContains(response, "Dhcp4/shared-networks[name=office]", status_code=403)
+        self.assertNotContains(response, "Dhcp4/shared-networks[name=office]", status_code=404)
 
 
 @without_dhcp_plugin()

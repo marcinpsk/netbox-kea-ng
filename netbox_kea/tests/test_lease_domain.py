@@ -534,7 +534,7 @@ def test_observed_values_have_no_defaults_for_identity_state_or_lifetime():
 
 def test_creation_requests_send_only_the_facts_the_operator_supplied():
     v4 = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.20"), hw_address="AA:BB:CC:00:00:20")
-    assert leases._creation_arguments(v4) == {"ip-address": "192.0.2.20", "hw-address": "aa:bb:cc:00:00:20"}
+    assert leases.creation_arguments(v4) == {"ip-address": "192.0.2.20", "hw-address": "aa:bb:cc:00:00:20"}
     v6 = DHCPv6LeaseRequest(
         address=ipaddress.IPv6Address("2001:db8:1::20"),
         duid="00:01:00:01:aa:bb",
@@ -543,7 +543,7 @@ def test_creation_requests_send_only_the_facts_the_operator_supplied():
         valid_lifetime=600,
         hostname="new.example.org",
     )
-    assert leases._creation_arguments(v6) == {
+    assert leases.creation_arguments(v6) == {
         "ip-address": "2001:db8:1::20",
         "duid": "00:01:00:01:aa:bb",
         "iaid": 20,

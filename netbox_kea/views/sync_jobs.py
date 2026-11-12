@@ -9,8 +9,8 @@ import logging
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponseForbidden, HttpResponseRedirect
-from django.shortcuts import get_object_or_404, render
+from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
@@ -23,8 +23,9 @@ from ..models import Server, SyncConfig
 from ..sync_plan import SYNC_SOURCES, global_source_enabled, source_sync_enabled
 from ..sync_run_result import jobs_of, latest, read
 from .dhcp_plugin_sync import sync_nav_context
+from .server_scope import ServerAccessMixin, permitted_servers, server_access, writable_servers
 from .settings_page import section_url, visible_sections
-from .workspace import ServerFamilyMixin, server_family_url
+from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ class SyncJobsView(LoginRequiredMixin, View):
 
     def get(self, request):
         """Render the sync jobs overview page with the server table."""
-        servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
-        allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
+        servers = list(permitted_servers(request.user).order_by("name"))
+        allowed_server_pks = writable_servers(request.user, servers)
         return render(
             request,
             self.template_name,
@@ -58,9 +59,10 @@ class SyncJobsView(LoginRequiredMixin, View):
 
 
 @register_model_view(Server, "sync_status")
-class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
+class ServerSyncStatusView(ServerAccessMixin, generic.ObjectView):
     """Per-server Sync Status tab."""
 
+    server_action = "view"
     workspace_section = "sync"
 
     queryset = Server.objects.all()
@@ -88,7 +90,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "latest_job": latest_job,
             "latest_result": read(latest_job).get(instance.pk) if latest_job is not None else None,
             "jobs_list_url": jobs_list_url,
-            "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
+            "can_change_server": self.access.can_change,
             "server_edit_url": server_family_url(request, instance, "server_edit"),
             "sync_toggle_url": server_family_url(request, instance, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, "server_sync_now"),
@@ -100,13 +102,14 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
 
 
 class ServerSyncNowView(LoginRequiredMixin, View):
-    """POST-only: enqueue KeaIpamSyncJob for one server immediately."""
+    """POST-only: enqueue a Run Now of KeaIpamSyncJob for one server (ADR 0016)."""
 
     def post(self, request, pk):
         """Enqueue a one-off sync job for the given server."""
-        if not request.user.has_perm("netbox_kea.change_server"):
-            return HttpResponseForbidden()
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        access = server_access(request, pk, "change")
+        if isinstance(access, HttpResponse):
+            return access
+        server = access.server
         try:
             KeaIpamSyncJob.enqueue(instance=server, user=request.user, server_pk=server.pk)
             messages.success(request, f"Sync job enqueued for {server.name}.")
@@ -117,13 +120,14 @@ class ServerSyncNowView(LoginRequiredMixin, View):
 
 
 class ServerSyncToggleView(LoginRequiredMixin, View):
-    """POST-only: toggle Server.sync_enabled for one server."""
+    """POST-only: toggle Server.sync_enabled for one server (ADR 0016)."""
 
     def post(self, request, pk):
         """Toggle the sync_enabled flag for the given server."""
-        if not request.user.has_perm("netbox_kea.change_server"):
-            return HttpResponseForbidden()
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        access = server_access(request, pk, "change")
+        if isinstance(access, HttpResponse):
+            return access
+        server = access.server
         server.snapshot()
         server.sync_enabled = not server.sync_enabled
         try:
@@ -170,7 +174,7 @@ def _replace_auto_jobs_view(model, replacement_view) -> None:
     )
 
 
-class ServerJobsView(View):
+class ServerJobsView(ServerAccessMixin, View):
     """Per-server Jobs tab, including periodic (unbound) Kea sync jobs.
 
     The default :class:`netbox.views.generic.ObjectJobsView` only shows jobs
@@ -181,6 +185,8 @@ class ServerJobsView(View):
     so the existing ``core/object_jobs.html`` template works unchanged.
     """
 
+    server_action = "view"
+    family_scoped = False
     tab = ViewTab(
         label="Jobs",
         badge=lambda obj: jobs_of(obj.pk).count(),
@@ -194,7 +200,7 @@ class ServerJobsView(View):
             raise PermissionDenied
         from core.tables import JobTable
 
-        obj = get_object_or_404(model.objects.restrict(request.user, "view"), **kwargs)
+        obj = self.server
         jobs = jobs_of(obj.pk)
         table = JobTable(data=jobs, orderable=False)
         table.configure(request)

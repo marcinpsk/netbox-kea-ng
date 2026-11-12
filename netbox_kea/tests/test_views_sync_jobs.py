@@ -638,12 +638,12 @@ class TestServerSyncNowView(TestCase):
                     [element.get_text(strip=True) for element in card.select("[data-sync-run-state]")], ["Skipped"]
                 )
 
-    def test_post_without_permission_returns_403(self):
+    def test_post_without_permission_returns_404(self):
         restricted = User.objects.create_user("noperm", "n@n.com", "pass")
         self.client.force_login(restricted)
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
         response = self.client.post(url)
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
 
     def test_post_enqueue_exception_shows_error_message(self):
         url = reverse("plugins:netbox_kea:server_sync_now", args=[self.server.pk])
@@ -702,12 +702,12 @@ class TestServerSyncToggleView(TestCase):
             fetch_redirect_response=False,
         )
 
-    def test_post_without_permission_returns_403(self):
+    def test_post_without_permission_returns_404(self):
         restricted = User.objects.create_user("noperm_toggle", "nt@nt.com", "pass")
         self.client.force_login(restricted)
         url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
         response = self.client.post(url)
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -753,9 +753,8 @@ class TestServerSyncToggleViewErrorHandling(TestCase):
         from django.db import DatabaseError
 
         url = reverse("plugins:netbox_kea:server_sync_toggle", args=[self.server.pk])
-        with patch.object(self.server.__class__, "save", side_effect=DatabaseError("disk full")):
-            with patch("netbox_kea.views.sync_jobs.get_object_or_404", return_value=self.server, autospec=True):
-                response = self.client.post(url, follow=True)
+        with patch.object(Server, "save", side_effect=DatabaseError("disk full"), autospec=True):
+            response = self.client.post(url, follow=True)
         self.assertContains(response, "internal error")
         self.assertRedirects(
             response,
