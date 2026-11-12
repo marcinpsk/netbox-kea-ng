@@ -1628,7 +1628,15 @@ class TestSyncEventDispatch(TransactionTestCase):
             self.skipTest("Before NetBox 4.6.9 a sync row is a plain transaction and dispatches with the request")
         self.client.force_login(User.objects.create_superuser(username="batch-bulk-user", password="batch-pass"))
         server = _make_server()
-        hosts = [{"ip-address": "10.0.10.1", "hostname": "bulk-1", "subnet-id": 1, "hw-address": "aa:bb:cc:00:10:01"}]
+        hosts = [
+            {
+                "ip-address": f"10.0.10.{n}",
+                "hostname": f"bulk-{n}",
+                "subnet-id": 1,
+                "hw-address": f"aa:bb:cc:00:10:0{n}",
+            }
+            for n in (1, 2)
+        ]
         url = reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": server.pk, "family": 4})
         DISPATCH_BATCHES.clear()
         self.addCleanup(DISPATCH_BATCHES.clear)
@@ -1638,9 +1646,15 @@ class TestSyncEventDispatch(TransactionTestCase):
         ):
             self.client.post(url)
 
-        self.assertTrue(MACAddress.objects.filter(mac_address="aa:bb:cc:00:10:01").exists())
+        self.assertEqual(
+            (
+                {str(ip.address.ip) for ip in NbIP.objects.all()},
+                {str(mac).lower() for mac in MACAddress.objects.values_list("mac_address", flat=True)},
+            ),
+            ({host["ip-address"] for host in hosts}, {host["hw-address"] for host in hosts}),
+        )
         rows = [batch for batch in DISPATCH_BATCHES if batch & {"ipaddress", "macaddress"}]
-        self.assertEqual(rows, [{"ipaddress", "macaddress"}])
+        self.assertEqual(rows, [{"ipaddress", "macaddress"}] * 2)
 
     def test_limit_a_failed_mac_write_keeps_its_row_and_dispatches_the_reverted_mac(self):
         from netbox_kea.event_scope import _NESTED_TRACKING
