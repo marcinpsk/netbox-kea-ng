@@ -95,6 +95,12 @@ class ServerViewTestCase(_ServerGenericTestMixin, ViewTestCases.PrimaryObjectVie
             "has_control_agent": False,
         }
 
+    def test_get_object_without_permission(self):
+        """The Server access gate answers 404 for a Server that the user may not view (ADR 0016), not NetBox's 403."""
+        instance = self._get_queryset().first()
+
+        self.assertHttpStatus(self.client.get(instance.get_absolute_url()), 404)
+
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ServerAPITestCase(

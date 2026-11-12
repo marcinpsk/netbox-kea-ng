@@ -43,14 +43,13 @@ from ..utilities import (
 from ._base import (
     _POOL_RE,
     _client_or_refusal,
-    _KeaChangeMixin,
     _run_change,
     _safe_return_url,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
-from .server_scope import writable_servers
+from .server_scope import ServerAccess, ServerAccessMixin
 from .subnet_lists import fetch_subnets, filter_subnets, present_subnets
-from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, ServerFamilyMixin, subsection_nav
+from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, subsection_nav
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ _NO_SUBNET_CIDR = (
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
-def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
+def subnets_nav_context(access: ServerAccess, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build the shared Subnets tab and the subsection navigation of the Subnets section.
 
     ``section`` is ``"subnets"`` or ``"shared_networks"``.
@@ -70,14 +69,15 @@ def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> d
     return {
         "tab": _SUBNETS_TAB,
         "dhcp_version": dhcp_version,
-        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], server_pk, dhcp_version),
+        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], access, dhcp_version),
     }
 
 
 @register_model_view(Server, "subnets_tab", path="subnets4", kwargs={"family": 4})
-class ServerSubnetsView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectChildrenView):
+class ServerSubnetsView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectChildrenView):
     """The Subnets tab of one family; fetches subnet data from Kea config."""
 
+    server_action = "view"
     workspace_section = "subnets"
     tab = _SUBNETS_TAB
 
@@ -87,12 +87,12 @@ class ServerSubnetsView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectChild
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render table or export."""
-        instance = self.get_object(**kwargs)
+        instance = self.server
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
         presented = present_subnets(
             instance,
             fetch_subnets(instance, self.dhcp_version, live="export" in request.GET),
-            writable=writable_servers(request.user, [instance]),
+            writable={instance.pk} if self.access.can_change else frozenset(),
             return_url=_safe_return_url(request, request.get_full_path()),
         )
         search_form = forms.SubnetSearchForm(request.GET or None)
@@ -133,7 +133,7 @@ class ServerSubnetsView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectChild
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
                 "search_form": search_form,
-                **subnets_nav_context(instance.pk, "subnets", self.dhcp_version),
+                **subnets_nav_context(self.access, "subnets", self.dhcp_version),
             },
         )
 
@@ -215,9 +215,10 @@ def _displayed_subnet(
     return catalogue, None
 
 
-class ServerSubnetPoolAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Add a pool to a subnet."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -244,7 +245,7 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMix
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the pool form of the Subnet."""
-        server = self.get_object(pk=pk)
+        server = self.server
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, _safe_return_url(request, self._subnets_url(pk)))
@@ -256,7 +257,7 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMix
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Add the pool to the Subnet."""
-        server = self.get_object(pk=pk)
+        server = self.server
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         form = forms.PoolAddForm(request.POST, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
         if not form.is_valid() or form.subnet is None:
@@ -276,9 +277,10 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMix
         return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
-class ServerSubnetPoolDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetPoolDeleteView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Delete a pool from a subnet."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -293,7 +295,7 @@ class ServerSubnetPoolDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamily
         pool = pool.strip()
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
-        server = self.get_object(pk=pk)
+        server = self.server
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
             return _unconfirmed_subnet(request, subnet_id, _safe_return_url(request, self._subnets_url(pk)))
@@ -318,7 +320,7 @@ class ServerSubnetPoolDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamily
         pool = pool.strip()
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
-        server = self.get_object(pk=pk)
+        server = self.server
         return_url = _safe_return_url(request, self._subnets_url(pk))
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
@@ -402,9 +404,10 @@ def _inherited_subnet_options(
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
 
 
-class ServerSubnetAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Add a new subnet to Kea."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -429,7 +432,7 @@ class ServerSubnetAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the empty Subnet form."""
-        server = self.get_object(pk=pk)
+        server = self.server
         form = forms.SubnetAddForm()
         configuration = server_configuration.display(server, self.dhcp_version)
         show_notices(request, notice(configuration))
@@ -445,7 +448,7 @@ class ServerSubnetAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Add the Subnet."""
-        server = self.get_object(pk=pk)
+        server = self.server
         form = forms.SubnetAddForm(request.POST)
         if not form.is_valid():
             return self._render_post(request, server, form)
@@ -489,9 +492,10 @@ class ServerSubnetAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
         return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
-class ServerSubnetEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Edit the configuration of an existing subnet in Kea."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -503,7 +507,7 @@ class ServerSubnetEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the edit form with the shown Subnet facts."""
-        server = self.get_object(pk=pk)
+        server = self.server
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         show_notices(request, notice(catalogue), notice(configuration))
@@ -601,7 +605,7 @@ class ServerSubnetEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Write the changed Subnet fields."""
-        server = self.get_object(pk=pk)
+        server = self.server
         form = forms.SubnetEditForm(request.POST)
         if not form.is_valid():
             return self._render_post(request, server, subnet_id, form)
@@ -631,9 +635,10 @@ class ServerSubnetEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
         return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
-class ServerSubnetDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetDeleteView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Delete a subnet from Kea."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -645,7 +650,7 @@ class ServerSubnetDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the confirmation page of the Subnet delete."""
-        server = self.get_object(pk=pk)
+        server = self.server
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         show_notices(request, notice(configuration))
         declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
@@ -668,7 +673,7 @@ class ServerSubnetDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Delete the Subnet."""
-        server = self.get_object(pk=pk)
+        server = self.server
         return_url = _safe_return_url(request, self._subnets_url(pk))
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
@@ -683,9 +688,10 @@ class ServerSubnetDeleteView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixi
         return redirect(return_url)
 
 
-class ServerSubnetWipeView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerSubnetWipeView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Wipe all leases in a subnet."""
 
+    server_action = "change"
     workspace_section = "subnets"
 
     queryset = Server.objects.all()
@@ -697,7 +703,7 @@ class ServerSubnetWipeView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the confirmation page of the lease wipe."""
-        server = self.get_object(pk=pk)
+        server = self.server
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         show_notices(request, notice(configuration))
         declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
@@ -717,7 +723,7 @@ class ServerSubnetWipeView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Wipe the leases of the Subnet."""
-        server = self.get_object(pk=pk)
+        server = self.server
         return_url = _safe_return_url(request, self._subnets_url(pk))
         _run_change(
             request,

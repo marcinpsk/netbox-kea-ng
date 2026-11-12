@@ -346,25 +346,25 @@ def unsafe_plugin_request(view_func: Callable[..., Any], method: str | None) -> 
 
 
 def mutation_form(view_func: Callable[..., Any]) -> bool:
-    """Recognize change-form navigation from the view's existing permission and CRUD classes."""
+    """Recognize change-form navigation from the view's gated Server action and its CRUD classes."""
     from netbox.views import generic
-
-    from .views._base import _KeaChangeMixin
 
     view = getattr(view_func, "view_class", None) or getattr(view_func, "cls", None)
     return (
         plugin_owned(view_func)
         and isinstance(view, type)
-        and issubclass(
-            view,
-            (
-                _KeaChangeMixin,
-                generic.ObjectEditView,
-                generic.ObjectDeleteView,
-                generic.BulkEditView,
-                generic.BulkDeleteView,
-                generic.BulkImportView,
-            ),
+        and (
+            getattr(view, "server_action", None) == "change"
+            or issubclass(
+                view,
+                (
+                    generic.ObjectEditView,
+                    generic.ObjectDeleteView,
+                    generic.BulkEditView,
+                    generic.BulkDeleteView,
+                    generic.BulkImportView,
+                ),
+            )
         )
     )
 

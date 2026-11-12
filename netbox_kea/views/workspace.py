@@ -8,16 +8,14 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django import forms as django_forms
-from django.conf import settings
 from django.http import HttpRequest, HttpResponse, QueryDict
-from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
-from utilities.views import ObjectPermissionRequiredMixin
 
 from .. import constants, forms
 from ..constants import Family, validate_family
 from ..models import Server
 from ._base import _safe_return_url
+from .server_scope import ServerAccess, permitted_servers, selected_family
 
 PAGINATION = "page"
 TABLE_FIELDS = ("sort", "per_page")
@@ -68,6 +66,8 @@ class WorkspaceSection:
     # The label of a top-level section among its own subsections, when it differs from its section tab.
     subsection_label: str | None = None
     family_in_query: bool = False
+    # A section whose page changes the Server, so its link shows only to a user who may change the Server.
+    change_page: bool = False
 
     @property
     def filter_fields(self) -> frozenset[str]:
@@ -135,7 +135,9 @@ WORKSPACE_SECTIONS = {
             "option_def_tab",
             subsection_label="Option Definitions",
         ),
-        WorkspaceSection("options", "Server Options", "server_dhcp_options_edit", None, parent="configuration"),
+        WorkspaceSection(
+            "options", "Server Options", "server_dhcp_options_edit", None, parent="configuration", change_page=True
+        ),
         WorkspaceSection("sync", "Sync", "server_sync_status", "combined_sync", "sync_status", family_in_query=True),
     )
 }
@@ -151,11 +153,13 @@ def subsections(section: WorkspaceSection) -> list[WorkspaceSection]:
     return [section, *(child for child in WORKSPACE_SECTIONS.values() if child.parent == section.key)]
 
 
-def subsection_nav(section: WorkspaceSection, pk: int, family: Family) -> list[tuple[str, str, str, bool]]:
-    """Return the key, label, Server URL and current state of each subsection beside *section*."""
+def subsection_nav(section: WorkspaceSection, access: ServerAccess, family: Family) -> list[tuple[str, str, str, bool]]:
+    """Return the key, label, Server URL and current state of each subsection beside *section* that the user may open."""
+    pk = access.server.pk
     return [
         (entry.key, entry.subsection_label or entry.label, entry.server_url(pk, family), entry.key == section.key)
         for entry in subsections(top_section(section))
+        if not entry.change_page or access.can_change
     ]
 
 
@@ -232,17 +236,6 @@ def with_return_url(url: str, return_url: str) -> str:
     return urlunsplit(parsed._replace(query=urlencode([*query, ("return_url", return_url)])))
 
 
-def selected_family(request: HttpRequest, server: Server) -> Family:
-    """Read the family route parameter, or the explicit selection on a Server page without one."""
-    match = request.resolver_match
-    if match is not None and "family" in match.kwargs:
-        return validate_family(match.kwargs["family"])
-    selected = request.GET.get("family")
-    if selected in ("4", "6"):
-        return 4 if selected == "4" else 6
-    return 4 if server.dhcp4 else 6
-
-
 def server_family_url(request: HttpRequest, server: Server, name: str) -> str:
     """Retain the selected family when navigating to a native Server route."""
     url = reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server)}"
@@ -271,7 +264,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
         switch_query["return_url"] = return_url
     switch_url = reverse("plugins:netbox_kea:server_switch", args=[server.pk])
     switches = []
-    for choice in Server.objects.restrict(request.user, "view").exclude(pk=server.pk).order_by("name"):
+    for choice in permitted_servers(request.user).exclude(pk=server.pk).order_by("name"):
         switch_query["target"] = str(choice.pk)
         switches.append((choice.name, switch_url + "?" + switch_query.urlencode()))
 
@@ -305,52 +298,3 @@ class FamilyRouteMixin:
         """Keep the family out of the handler arguments, so that a handler reads it from ``dhcp_version``."""
         kwargs.pop("family", None)
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
-
-
-class ServerFamilyMixin:
-    """Refuse a disabled family before a Server view reads or changes Kea."""
-
-    workspace_section = "overview"
-
-    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-        """Use the native permitted Server scope before showing the disabled state."""
-        if not request.user.is_authenticated and settings.LOGIN_REQUIRED:
-            return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
-        if isinstance(self, ObjectPermissionRequiredMixin) and not self.has_permission():
-            return self.handle_no_permission()
-        if request.method not in ("GET", "HEAD", "OPTIONS") and (refusal := self.server_scope_access(request)):
-            return refusal
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=kwargs["pk"])
-        family = selected_family(request, server)
-        if not (server.dhcp4 if family == 4 else server.dhcp6):
-            if request.method not in ("GET", "HEAD", "OPTIONS") and (
-                refusal := self.disabled_family_access(request, server)
-            ):
-                return refusal
-            if request.headers.get("HX-Request") == "true":
-                response = HttpResponse()
-                response["HX-Refresh"] = "true"
-                return response
-            context = server_context(request, server)
-            enabled = next(
-                (
-                    (family, url)
-                    for family, url in context["workspace_families"]
-                    if (server.dhcp4 if family == 4 else server.dhcp6)
-                ),
-                None,
-            )
-            return render(
-                request,
-                "netbox_kea/server_protocol_disabled.html",
-                {"object": server, "enabled_family": enabled},
-            )
-        return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
-
-    def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
-        """Keep object-independent action refusals before the Server lookup."""
-        return None
-
-    def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
-        """Keep an action's extra permission refusal before the disabled state."""
-        return None

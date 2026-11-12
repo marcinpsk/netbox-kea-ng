@@ -80,6 +80,7 @@ from .kea_stub import (
 )
 from .utils import (
     UNCONFIRMED_RUNTIME,
+    _grant,
     _make_db_server,
     _ViewTestBase,
     active_tabs,
@@ -932,11 +933,12 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         )
 
     def test_forbidden_user_gets_403(self):
-        """A user without bulk_delete_lease_from_server permission must receive 403."""
+        """A viewer without bulk_delete_lease_from_server permission must receive 403."""
         from django.contrib.auth import get_user_model as _get_user_model
 
         User2 = _get_user_model()
         unprivileged = User2.objects.create_user("noperm_user", password="x")
+        _grant([Server], ["view"], user=unprivileged)
         self.client.force_login(unprivileged)
         response = self.client.post(
             self._url(),

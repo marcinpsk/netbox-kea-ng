@@ -3,6 +3,7 @@
 {% extends "netbox_kea/server_workspace.html" %}
 {% load kea_workspace %}
 {% block content %}
+{% enabled_family object as enabled_family %}
 <div id="kea-protocol-disabled" class="alert alert-info" role="status">
   <h2>Protocol not enabled</h2>
   {% if enabled_family %}<a href="{{ enabled_family.1 }}">Open DHCPv{{ enabled_family.0 }}</a>{% endif %}

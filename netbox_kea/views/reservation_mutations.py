@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.core.exceptions import BadRequest
 from django.http import Http404, HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
@@ -35,7 +35,6 @@ from ..sync_permissions import sync_gate
 from ..sync_plan import periodic_sync_enabled
 from ._base import (
     _client_settings_refusal,
-    _KeaChangeMixin,
     _run_change,
     _safe_return_url,
     _show_journal_and_signal,
@@ -43,7 +42,8 @@ from ._base import (
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import RESERVATIONS_TAB
-from .workspace import FamilyRouteMixin, ServerFamilyMixin
+from .server_scope import ServerAccessMixin
+from .workspace import FamilyRouteMixin
 
 logger = logging.getLogger(__name__)
 
@@ -258,14 +258,15 @@ def _published_name_preview(
     }
 
 
-class ServerReservationPublishedNameView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, View):
+class ServerReservationPublishedNameView(FamilyRouteMixin, ServerAccessMixin, View):
     """Render the name that Kea publishes for the hostname in the Reservation form, from the cached catalogue."""
 
+    server_action = "change"
     workspace_section = "reservations"
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the published name of the hostname in the form."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
+        server = self.server
         hostname = request.GET.get("hostname", "").strip()
         context: dict[str, Any] = {"hostname": hostname}
         if hostname:
@@ -282,7 +283,8 @@ class ServerReservationPublishedNameView(FamilyRouteMixin, _KeaChangeMixin, Serv
         return render(request, "netbox_kea/inc/reservation_published_name.html", context)
 
 
-class _ReservationMutationView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class _ReservationMutationView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
+    server_action = "change"
     workspace_section = "reservations"
     queryset = Server.objects.all()
     tab = RESERVATIONS_TAB
@@ -375,7 +377,7 @@ class ServerReservationAddView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the empty Reservation form."""
-        server = self.get_object(pk=pk)
+        server = self.server
         capabilities = None
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
@@ -402,7 +404,7 @@ class ServerReservationAddView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Create the Reservation."""
-        server = self.get_object(pk=pk)
+        server = self.server
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
@@ -475,7 +477,7 @@ class ServerReservationEditView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the edit form with the live Reservation facts."""
-        server = self.get_object(pk=pk)
+        server = self.server
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
@@ -502,7 +504,7 @@ class ServerReservationEditView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Write the changed Reservation fields."""
-        server = self.get_object(pk=pk)
+        server = self.server
         identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
         try:
@@ -593,7 +595,7 @@ class ServerReservationDeleteView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the confirmation page of the Reservation delete."""
-        server = self.get_object(pk=pk)
+        server = self.server
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
@@ -618,7 +620,7 @@ class ServerReservationDeleteView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Delete the Reservation."""
-        server = self.get_object(pk=pk)
+        server = self.server
         identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
         capabilities = self._mutation_capabilities(request, server)

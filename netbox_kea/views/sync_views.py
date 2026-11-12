@@ -10,7 +10,7 @@ from django.contrib import messages
 from django.db import DatabaseError
 from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import render
 from django.urls import reverse
 from django.views import View
 
@@ -55,7 +55,6 @@ from ._base import (
     RowT,
     _client_or_refusal,
     _client_settings_refusal,
-    _KeaChangeMixin,
     _persistence_failure,
     _run_change_loop,
 )
@@ -70,7 +69,8 @@ from .reservation_mutations import (
     show_reservation_side_effects,
 )
 from .reservations import MUTATION_UNCONFIRMED, RESERVATIONS_TAB, reservation_badge
-from .workspace import FamilyRouteMixin, ServerFamilyMixin
+from .server_scope import ServerAccessMixin
+from .workspace import FamilyRouteMixin
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,10 @@ def _manual_sync_reply(
     )
 
 
-class ServerLeaseSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
+    server_action = "view"
     workspace_section = "leases"
 
     def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
@@ -129,7 +130,7 @@ class ServerLeaseSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
         if not gate.allowed:
             return _row_error(request, gate.reason)
 
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         with _client_or_refusal(server, self.dhcp_version) as client:
             if isinstance(client, str):
                 return _row_error(request, client)
@@ -146,9 +147,10 @@ class ServerLeaseSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
         return _manual_sync_reply(request, outcome, f"Lease {label}")
 
 
-class ServerReservationSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
+    server_action = "view"
     workspace_section = "reservations"
 
     def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
@@ -161,7 +163,7 @@ class ServerReservationSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditional
         gate = sync_gate(request.user, claim_permissions(RESERVATION))
         if not gate.allowed:
             return _row_error(request, gate.reason)
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         identity = reservation_identity_from_request(request, self.dhcp_version)
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             return _row_error(request, refusal)
@@ -190,9 +192,10 @@ class ServerReservationSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditional
         return _manual_sync_reply(request, outcome, "Reservation", record)
 
 
-class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationBulkSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
 
+    server_action = "view"
     workspace_section = "reservations"
 
     def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
@@ -202,7 +205,7 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Synchronize every valid Reservation of the family."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         if refusal := self.disabled_family_access(request, server):
             return refusal
 
@@ -244,7 +247,7 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
         return HttpResponseRedirect(redirect_url)
 
 
-class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
+class ReservationCheckNetboxIPView(ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Advisory GET endpoint: report what saving the Reservation does to the IP address *ip* in NetBox IPAM.
 
     Used by the Reservation form to warn, without blocking. Server-scoped via ``pk`` so the existing ``Server``
@@ -253,11 +256,12 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
     HTML fragment.
     """
 
+    server_action = "view"
+
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Read the IPAM Ownership of *ip* and return an advisory fragment (or empty body)."""
-        # Scope to a viewable server so anonymous/unauthorised probes can't
-        # enumerate NetBox IPAM through this endpoint.
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        # The gate scopes the read to a viewable Server, so a probe cannot enumerate NetBox IPAM through it.
+        server = self.server
 
         raw_ip = (request.GET.get("ip") or "").strip()
         if not raw_ip:
@@ -371,14 +375,13 @@ class _ImportRefusal:
     lines: tuple[str, ...]
 
 
-class ServerReservationBulkImportView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create its Reservations, one Configuration Change for each entry (ADR 0012).
 
     An entry that Kea did not apply or did not confirm stops the import.
     """
 
+    server_action = "change"
     workspace_section = "reservations"
 
     template_name = "netbox_kea/server_reservation_bulk_import.html"
@@ -390,7 +393,7 @@ class ServerReservationBulkImportView(
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the Reservation document import form."""
-        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        instance = self.server
         return self._render(request, instance, self.form_class(), None)
 
     def _render(self, request: HttpRequest, instance: Server, form: Any, result: dict[str, Any] | None) -> HttpResponse:
@@ -468,7 +471,7 @@ class ServerReservationBulkImportView(
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Validate the complete document, then send one Configuration Change for each entry until one fails."""
-        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        instance = self.server
         form = self.form_class(request.POST, request.FILES)
         if not form.is_valid():
             return self._render(request, instance, form, None)
@@ -560,9 +563,7 @@ def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ServerLeaseBulkImportView(
-    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
-):
+class ServerLeaseBulkImportView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
@@ -571,6 +572,7 @@ class ServerLeaseBulkImportView(
     row that Kea did not confirm.
     """
 
+    server_action = "change"
     workspace_section = "leases"
 
     template_name = "netbox_kea/server_lease_bulk_import.html"
@@ -582,7 +584,7 @@ class ServerLeaseBulkImportView(
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the CSV upload form."""
-        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        instance = self.server
         return self._render(request, instance, self.form_class(), None)
 
     def _render(self, request: HttpRequest, instance: Server, form: Any, result: dict[str, Any] | None) -> HttpResponse:
@@ -603,7 +605,7 @@ class ServerLeaseBulkImportView(
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Parse uploaded CSV and create leases in Kea."""
-        instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        instance = self.server
         form = self.form_class(request.POST, request.FILES)
 
         if not form.is_valid():

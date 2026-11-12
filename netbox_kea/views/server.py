@@ -26,7 +26,8 @@ from ..utilities import (
 )
 from ._base import LazyClient, _safe_return_url, daemon_status, daemon_version
 from .notices import Notice, inline_notices, notice
-from .workspace import ServerFamilyMixin, server_context, with_return_url
+from .server_scope import ServerAccessMixin
+from .workspace import server_context, with_return_url
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +103,10 @@ def _get_global_options(server: Server) -> tuple[dict[str, list[GlobalOptionRow]
 
 
 @register_model_view(Server)
-class ServerView(ServerFamilyMixin, generic.ObjectView):
+class ServerView(ServerAccessMixin, generic.ObjectView):
     """Detail view for a single Kea Server."""
 
+    server_action = "view"
     queryset = Server.objects.all()
 
 
@@ -192,20 +194,22 @@ class ServerBulkImportView(generic.BulkImportView):
 
 
 @register_model_view(Server, "status")
-class ServerStatusRedirectView(generic.ObjectView):
+class ServerStatusRedirectView(ServerAccessMixin, generic.ObjectView):
     """Send the former Status entry point to the Server Overview."""
 
+    server_action = "view"
     queryset = Server.objects.all()
 
     def get(self, request: HttpRequest, **kwargs):
-        """Preserve native view permission checks before redirecting."""
-        return redirect(self.get_object(**kwargs).get_absolute_url())
+        """Redirect after the gate."""
+        return redirect(self.server.get_absolute_url())
 
 
 @register_model_view(Server, "status_data")
-class ServerStatusView(generic.ObjectView):
+class ServerStatusView(ServerAccessMixin, generic.ObjectView):
     """Server status tab: shows daemon uptime, versions and HA state."""
 
+    server_action = "view"
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_status.html"
 
@@ -260,10 +264,9 @@ class ServerStatusView(generic.ObjectView):
             services.insert(0, {"name": "Control Agent", "status_data": statuses.get("Control Agent", {})})
 
         global_options, notices = _get_global_options(instance)
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
             "global_options": global_options,
             "inline_notices": inline_notices(*notices),
-            "can_change_server": can_change,
+            "can_change_server": self.access.can_change,
         }

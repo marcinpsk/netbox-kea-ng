@@ -700,15 +700,15 @@ class TestServerFilterForm(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _KeaChangeMixin — 403 for view-only user
+# The Server access gate — 403 for a view-only user on a change view
 # ---------------------------------------------------------------------------
 
 
-class TestKeaChangeMixinPermission(_ViewTestBase):
-    """_KeaChangeMixin returns 403 for view-only users."""
+class TestServerAccessGatePermission(_ViewTestBase):
+    """The Server access gate returns 403 for view-only users on a change view."""
 
     def test_view_only_user_gets_403_on_mutation_view(self):
-        """User with 'view' but not 'change' on Server gets 403 from _KeaChangeMixin."""
+        """User with 'view' but not 'change' on Server gets 403 from the gate."""
         from users.models import ObjectPermission
 
         readonly = User.objects.create_user(username="readonly_mixin", password="pass")
@@ -1005,36 +1005,6 @@ class TestBulkDeletePermission(_ViewTestBase):
             response = self.client.post(url, {"pk": ["10.0.0.1"], "confirm": "1"})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(kea.commands(), [])
-
-
-# ---------------------------------------------------------------------------
-# _KeaChangeMixin — pk is None + no change_server perm
-# ---------------------------------------------------------------------------
-
-
-class TestKeaChangeMixinNoPk(_ViewTestBase):
-    """dispatch with no pk kwarg + user lacking change_server perm → 403."""
-
-    def test_no_pk_no_perm_returns_403(self):
-        from django.http import HttpResponse
-        from django.test import RequestFactory
-        from django.views import View
-
-        from netbox_kea.views._base import _KeaChangeMixin
-
-        class _MinimalView(_KeaChangeMixin, View):
-            def get(self, request, **kwargs):
-                return HttpResponse("ok")
-
-        # Create a user with no permissions
-        no_perm_user = User.objects.create_user(username="no_perm_kca", password="pass")
-        factory = RequestFactory()
-        request = factory.get("/")
-        request.user = no_perm_user
-        view_func = _MinimalView.as_view()
-        # Call with NO pk kwarg → elif branch
-        response = view_func(request)
-        self.assertEqual(response.status_code, 403)
 
 
 # ---------------------------------------------------------------------------

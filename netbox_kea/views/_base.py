@@ -5,13 +5,12 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
-from django.contrib.auth.models import AbstractUser, AnonymousUser, PermissionsMixin
-from django.http import Http404, HttpResponse, HttpResponseForbidden
+from django.contrib.auth.models import AbstractUser, AnonymousUser
 from django.http.request import HttpRequest
 from django.urls import Resolver404, get_script_prefix, resolve
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -143,30 +142,6 @@ def _client_settings_refusal(server: Server, version: Family) -> str:
     """
     with _client_or_refusal(server, version) as client:
         return client if isinstance(client, str) else ""
-
-
-class _KeaChangeMixin:
-    """Mixin that gates a view behind ``netbox_kea.change_server``.
-
-    Applied to all views that mutate live Kea state (reservation/pool/subnet
-    add, edit, delete).  Both GET (form display) and POST (form submit) are
-    protected so users without write access never see the form.
-    """
-
-    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-        if not request.user.is_authenticated:
-            from django.contrib.auth.views import redirect_to_login
-
-            return redirect_to_login(request.get_full_path())
-        pk = kwargs.get("pk")
-        if pk is not None:
-            if not Server.objects.restrict(request.user, "view").filter(pk=pk).exists():
-                raise Http404
-            if not Server.objects.restrict(request.user, "change").filter(pk=pk).exists():
-                return HttpResponseForbidden("You do not have permission to modify Kea server data.")
-        elif not cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server"):
-            return HttpResponseForbidden("You do not have permission to modify Kea server data.")
-        return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
 
 def _run_change(

@@ -18,7 +18,6 @@ from typing import Any
 from django.contrib import messages
 from django.db.models import Count
 from django.http import HttpRequest, HttpResponseForbidden, HttpResponseRedirect
-from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
@@ -42,6 +41,7 @@ from ..models import DhcpImportTrigger, Server
 from ..sync_permissions import sync_gate
 from ..tables import DhcpImportEntryTable
 from .notices import Notice
+from .server_scope import ServerAccess, ServerAccessMixin
 from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
@@ -364,9 +364,10 @@ def _drift_objects(
 
 
 @register_model_view(Server, "dhcp_plugin")
-class ServerDhcpPluginView(generic.ObjectView):
+class ServerDhcpPluginView(ServerAccessMixin, generic.ObjectView):
     """Sync subsection: the import, its latest run, and the drift card that htmx loads after the page."""
 
+    server_action = "view"
     workspace_section = "sync"
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_dhcp_plugin.html"
@@ -377,7 +378,7 @@ class ServerDhcpPluginView(generic.ObjectView):
         return {
             "integration_refusal": refusal,
             "mapping_unavailable": _mapping_unavailable() if not refusal else None,
-            "sync_refusal": _sync_refusal(request.user, instance),
+            "sync_refusal": _sync_refusal(self.access),
             **latest_run_context(request, instance),
             **sync_nav_context(request, instance, "dhcp_plugin", integration_runs=not refusal),
         }
@@ -395,13 +396,14 @@ def _mapping_unavailable() -> str | None:
 
 
 @register_model_view(Server, "dhcp_plugin_drift")
-class ServerDhcpPluginDriftView(generic.ObjectView):
+class ServerDhcpPluginDriftView(ServerAccessMixin, generic.ObjectView):
     """The drift card of the DHCP Plugin page: a live read of every enabled family against its mappings.
 
     htmx loads it after the page. Every refusal and every failed read is a 200 reply with a warning, because htmx
     swaps no error reply.
     """
 
+    server_action = "view"
     queryset = Server.objects.all()
     template_name = "netbox_kea/inc/dhcp_plugin_drift.html"
 
@@ -442,28 +444,30 @@ def latest_run_context(request: HttpRequest, server: Server) -> dict[str, Any]:
 _KIND_ORDER = {kind.value: index for index, kind in enumerate(KIND_LABELS)}
 
 
-def _sync_refusal(user, server: Server) -> str:
-    """Return why *user* may not run the import on *server*, or an empty string when the user may.
+def _sync_refusal(access: ServerAccess) -> str:
+    """Return why the user may not run the import on the Server, or an empty string when the user may.
 
     The import needs change permission on the Server and the manual Sync rule for its IPAM, DCIM and DHCP plugin writes.
     """
-    if not Server.objects.restrict(user, "change").filter(pk=server.pk).exists():
+    if not access.can_change:
         return "Sync to DHCP plugin needs change permission on this Server."
-    return sync_gate(user, dhcp_plugin.import_permissions(server)).reason
+    return sync_gate(access.user, dhcp_plugin.import_permissions(access.server)).reason
 
 
-class ServerDhcpPluginSyncNowView(View):
+class ServerDhcpPluginSyncNowView(ServerAccessMixin, View):
     """POST-only: import this server's live Kea data-tier config into the DHCP plugin."""
+
+    server_action = "view"
 
     def post(self, request, pk):
         """Run the import and report a per-version summary."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        server = self.server
         redirect = HttpResponseRedirect(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[pk]))
 
         if refusal := dhcp_plugin.integration_refusal(server):
             messages.error(request, refusal)
             return redirect
-        if refusal := _sync_refusal(request.user, server):
+        if refusal := _sync_refusal(self.access):
             return HttpResponseForbidden(refusal)
 
         try:

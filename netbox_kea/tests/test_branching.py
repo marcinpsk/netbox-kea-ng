@@ -927,6 +927,20 @@ class BranchPageTest(_BranchReadTestCase):
         self.assertNotContains(in_branch, add)
         self.assertNotContains(in_branch, _BANNER_TEXT, msg_prefix="the banner is for plugin pages only")
 
+    def test_the_ip_kea_reservations_page_lists_mains_servers_without_reservation_links(self):
+        page = reverse("plugins:netbox_kea:ipaddress_kea_reservations", args=[self.ip.pk])
+        add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
+
+        on_main = self.client.get(page)
+        self.client.cookies[COOKIE_NAME] = self.branch.schema_id
+        in_branch = self.client.get(page)
+
+        self.assertContains(on_main, f'href="{add}?')
+        self.assertNotContains(on_main, "Kea servers (main)")
+        self.assertContains(in_branch, "Kea servers (main)")
+        self.assertContains(in_branch, self.server.name)
+        self.assertNotContains(in_branch, add)
+
 
 @override_settings(ROOT_URLCONF="netbox_kea.tests.branch_refusal_urls")
 class BranchActiveResponseTest(TransactionTestCase):

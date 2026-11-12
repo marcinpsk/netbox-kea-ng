@@ -11,6 +11,7 @@ from netbox.views import generic
 from utilities.templatetags.tabs import model_view_tabs
 
 from ..views._base import _safe_return_url
+from ..views.server_scope import request_access, selected_family
 from ..views.workspace import WORKSPACE_SECTIONS, server_context, with_return_url
 
 register = template.Library()
@@ -58,13 +59,29 @@ def _object_tabs(context, server, family) -> list[dict]:
 
 @register.simple_tag(takes_context=True)
 def server_control_urls(context, server):
-    """Supply native controls on plain views and their selected-family URLs."""
+    """Supply native controls on plain views, for this Server and not only the model, and their selected-family URLs."""
+    request = context["request"]
     view = generic.ObjectView()
     if "actions" not in context and hasattr(view, "get_permitted_actions"):
-        context["actions"] = view.get_permitted_actions(context["request"].user, model=server)
-    family = server_context(context["request"], server)["workspace_family"]
+        actions = view.get_permitted_actions(request.user, model=server)
+        context["actions"] = request_access(request, server).permitted_actions(actions)
+    family = selected_family(request, server)
     urls = [reverse(f"plugins:netbox_kea:server_{action}", args=[server.pk]) for action in ("edit", "delete")]
-    return [(url, with_return_url(f"{url}?family={family}", _safe_return_url(context["request"], ""))) for url in urls]
+    return [(url, with_return_url(f"{url}?family={family}", _safe_return_url(request, ""))) for url in urls]
+
+
+@register.simple_tag(takes_context=True)
+def enabled_family(context, server):
+    """Return the family and the URL of the first family that *server* serves, or None."""
+    workspace = server_context(context["request"], server)
+    return next(
+        (
+            (family, url)
+            for family, url in workspace["workspace_families"]
+            if (server.dhcp4 if family == 4 else server.dhcp6)
+        ),
+        None,
+    )
 
 
 @register.filter(is_safe=True)

@@ -201,7 +201,7 @@ except in tests, migrations, and `__init__.py`.
 URL request
   → urls.py             (routes to view classes)
   → views/              (view modules; each Kea client lives in a `with` block or a holder that closes it)
-      _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
+      _base.py          (ConditionalLoginRequiredMixin, the change runners, shared helpers)
       notices.py        (the one notice rule of a read: notice(), load_snapshot(), load_target() and the channels; ADR 0003)
       read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
       server.py         (Server CRUD, status tab)
@@ -213,7 +213,7 @@ URL request
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
       combined.py       (cross-server dashboard, reservations, subnets; the lease Server chooser)
-      server_scope.py   (Server selection, view permissions, and family availability)
+      server_scope.py   (the Server access gate, Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       manual_sync_presenter.py (the one presentation of a Manual Sync outcome: messages, row replies, notes)
@@ -808,6 +808,21 @@ resort, reserved for true external boundaries you cannot run locally.
 - **HTMX pagination**: lease views serve a full page or an HTMX partial from the same
   `get()` via `htmx_partial(request, ...)`. The hidden `page` field uses
   `VeryHiddenInput` (renders empty) to avoid form conflicts.
+- **Server access gate** (`views/server_scope.py`, ADR 0016): every view on a Server `pk` route inherits
+  `ServerAccessMixin` and names the action of its handlers in `server_action` (`"view"`, or `"change"`, which needs
+  view too). The gate loads the Server once and applies one refusal rule: an anonymous user gets the login redirect,
+  a Server that the user may not view is 404, and a viewable Server that the user may not change is 403 for a change
+  view. Then it refuses a disabled family. Handlers read `self.server`, and `self.access.can_change` (read once, on
+  first use) when they offer a change; a combined page uses `writable_servers`. The hooks `server_scope_access`
+  (before the lookup, unsafe methods) and `disabled_family_access` keep an action's own refusal. Run Now and the
+  Sync toggle call `server_access()` in their handlers, because `branching.mutation_form` treats each gated change
+  view as a change form. NetBox's Server edit and delete views keep NetBox's checks. The header Edit and Delete
+  buttons come from `ServerAccess.permitted_actions`. Only `server_scope` reads a Server permission (OpenGrep
+  `kea-server-permission-outside-server-scope`): other code gets permitted Servers from `permitted_servers()`.
+  The custom `bulk_delete_lease_from_server` check with `obj=` is the exception. `test_server_access.py` checks the
+  rule on every Server route and fails for a view that does not declare `server_action`.
+- **Private names**: a name that starts with `_` is private to its module. Make it public when another module
+  imports it (OpenGrep `kea-private-name-import`, production code only).
 - **View registration**: standard CRUD uses `@register_model_view(Server)` /
   `@register_model_view(Server, "edit")`; `get_model_urls("netbox_kea", "server")`
   auto-generates detail/edit/delete/changelog/journal. Custom routes (leases,

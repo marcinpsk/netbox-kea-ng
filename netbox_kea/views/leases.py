@@ -14,7 +14,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest, QueryDict
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.tables import BaseTable
@@ -96,7 +96,6 @@ from ._base import (
     LazyClient,
     NetBoxRequest,
     _client_or_refusal,
-    _KeaChangeMixin,
     _run_change,
     _run_change_loop,
     _safe_return_url,
@@ -108,7 +107,8 @@ from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, load_snapshot, load_target, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
-from .workspace import FamilyRouteMixin, ServerFamilyMixin
+from .server_scope import ServerAccessMixin
+from .workspace import FamilyRouteMixin
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,7 @@ def present(
     table_class: type[T],
     *,
     visible_only: bool,
+    can_change: bool,
 ) -> PresentedLeases:
     """Build the Lease table of *snapshot* and fill its badge and action fields. It must run in the main thread.
 
@@ -257,7 +258,7 @@ def present(
         server,
         snapshot.family,
         can_delete=can_delete,
-        can_change=request.user.has_perm("netbox_kea.change_server", obj=server),
+        can_change=can_change,
         user=request.user,
         sync=lease_sync_gates(request.user),
         return_url=return_url,
@@ -273,9 +274,10 @@ _LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: 
 
 
 @register_model_view(Server, "leases_tab", path="leases4", kwargs={"family": 4})
-class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerLeasesView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """The Lease search tab of one family."""
 
+    server_action = "view"
     workspace_section = "leases"
 
     template_name = "netbox_kea/server_dhcp_leases.html"
@@ -324,13 +326,12 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
         form = self._make_search_form(
             instance, request.GET if bound else None, initial={"by": request.GET.get("by", "")}
         )
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,
             "table": table,
             "dhcp_version": self.dhcp_version,
         }
-        if can_change:
+        if self.access.can_change:
             ctx["add_url"] = reverse(
                 "plugins:netbox_kea:server_lease_add", kwargs={"pk": instance.pk, "family": self.dhcp_version}
             )
@@ -341,7 +342,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
 
     def get_export(self, request: NetBoxRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
-        instance = self.get_object(**kwargs)
+        instance = self.server
         form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
             messages.warning(request, "Invalid form for export.")
@@ -383,7 +384,9 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
             messages.warning(request, _incomplete_export_message(snapshot))
             return redirect(request.path)
         if limited:
-            table = present(request, instance, snapshot, self.table, visible_only=False).table
+            table = present(
+                request, instance, snapshot, self.table, visible_only=False, can_change=self.access.can_change
+            ).table
             return export_table(table, "leases_limited_coverage.csv", use_selected_columns=True)
         return lease_csv_response(
             snapshot.records,
@@ -399,7 +402,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
         Refuses a partial export when the server has more leases than the limit.
         Requires the ``lease_cmds`` hook to be loaded on the Kea server.
         """
-        instance = self.get_object(**kwargs)
+        instance = self.server
 
         per_page = 1000
 
@@ -472,7 +475,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
 
     def get(self, request: NetBoxRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
-        instance: Server = self.get_object(**kwargs)
+        instance = self.server
 
         if "export" in request.GET:
             return self.get_export(request, **kwargs)
@@ -505,7 +508,9 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
             if isinstance(loaded, Notice):
                 return self._search_without_table(request, instance, form, loaded)
             snapshot = loaded
-            presented = present(request, instance, snapshot, self.table, visible_only=by != "")
+            presented = present(
+                request, instance, snapshot, self.table, visible_only=by != "", can_change=self.access.can_change
+            )
             table = presented.table
             if by == "":
                 next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
@@ -572,9 +577,10 @@ class FakeLeaseModel:
     _meta = FakeLeaseModelMeta
 
 
-class ServerLeasesDeleteView(FamilyRouteMixin, ServerFamilyMixin, GetReturnURLMixin, generic.ObjectView):
+class ServerLeasesDeleteView(FamilyRouteMixin, ServerAccessMixin, GetReturnURLMixin, generic.ObjectView):
     """Confirm and process the bulk deletion of DHCP leases."""
 
+    server_action = "view"
     workspace_section = "leases"
     tab = _LEASES_TAB
 
@@ -594,11 +600,11 @@ class ServerLeasesDeleteView(FamilyRouteMixin, ServerFamilyMixin, GetReturnURLMi
 
     def get(self, request: HttpRequest, **kwargs):
         """Redirect back to the server on GET (this view is POST-only)."""
-        return redirect(self.get_return_url(request, obj=self.get_object(**kwargs)))
+        return redirect(self.get_return_url(request, obj=self.server))
 
     def post(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Show confirmation page or delete leases if confirmed."""
-        instance: Server = self.get_object(**kwargs)
+        instance = self.server
 
         if refusal := self.disabled_family_access(request, instance):
             return refusal
@@ -679,13 +685,14 @@ def _shown_row(shown: ShownLease) -> dict[str, Any]:
     }
 
 
-class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
     """Edit a single Lease via ``lease{v}-update``.
 
     The route target is the address, or ``address/length`` for a delegated prefix. The page carries the
     shown Lease facts, and the save writes only the fields that differ from them.
     """
 
+    server_action = "change"
     workspace_section = "leases"
 
     tab = _LEASES_TAB
@@ -694,9 +701,6 @@ class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
     def form_class(self) -> type[forms._LeaseEditForm]:
         """Return the Lease edit form of the route family."""
         return {4: forms.Lease4EditForm, 6: forms.Lease6EditForm}[self.dhcp_version]
-
-    def _get_server(self, pk: int) -> Server:
-        return get_object_or_404(Server.objects.restrict(self.request.user, "view"), pk=pk)
 
     def _leases_url(self, server: Server) -> str:
         """Return the lease search that linked here, else the lease list."""
@@ -723,7 +727,7 @@ class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
 
     def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Render the edit form pre-filled with the current lease values and the shown facts."""
-        server = self._get_server(pk)
+        server = self.server
 
         with _client_or_refusal(server, self.dhcp_version) as client:
             if isinstance(client, str):
@@ -759,7 +763,7 @@ class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
 
     def post(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Write the changed fields via ``lease{v}-update`` after a fresh read agrees with the shown facts."""
-        server = self._get_server(pk)
+        server = self.server
 
         form = self.form_class(request.POST)
         valid = form.is_valid()
@@ -789,9 +793,10 @@ class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
         return redirect(self._leases_url(server))
 
 
-class ServerLeaseAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class ServerLeaseAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
     """Create a new lease via ``lease{v}-add``."""
 
+    server_action = "change"
     workspace_section = "leases"
 
     queryset = Server.objects.all()
@@ -829,13 +834,13 @@ class ServerLeaseAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, g
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the empty add form."""
-        server = self.get_object(pk=pk)
+        server = self.server
 
         return self._render(request, server, self._form(server, sync_gate(request.user, claim_permissions(LEASE))))
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Create the Lease of the typed request, read it back, and report both outcomes."""
-        server = self.get_object(pk=pk)
+        server = self.server
 
         gate = sync_gate(request.user, claim_permissions(LEASE))
         form = self._form(server, gate, request.POST)
