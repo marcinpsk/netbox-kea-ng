@@ -1957,7 +1957,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         self.assertNotIsInstance(self.results["import"], BaseException)
         self.assertEqual(sqlstates, ["55P03"])
-        self.assertEqual((summary.errors, summary.ownership.prefix_errors), (1, 1))
+        self.assertEqual((summary.errors, summary.ownership.errors), (1, 1))
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
         retry = ImportSummary()
@@ -2054,7 +2054,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertNotIn("40P01", sqlstates)
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         self.assertNotIsInstance(self.results["import"], BaseException)
-        self.assertEqual((summary.errors, summary.ownership.prefix_errors), (1, 1))
+        self.assertEqual((summary.errors, summary.ownership.errors), (1, 1))
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
         retry = ImportSummary()
@@ -2064,7 +2064,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
         from django.db import transaction
 
-        from netbox_kea.ipam_upgrade_barrier import complete_job_observation
+        from netbox_kea.ipam_upgrade_barrier import complete_observation
 
         owner = _server(
             "owner", sync_reservations_enabled=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False
@@ -2088,14 +2088,14 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 server_row_locked.set()
             return result
 
-        def complete_observation():
+        def publish_receipt():
             with connection.execute_wrapper(observe_completion):
-                complete_job_observation(owner, {4: SyncReport(completed_sources={"lease"})})
+                complete_observation(owner, "job", {4: SyncReport(completed_sources={"lease"}).coverage()})
 
         with _kea([_lease("198.18.0.2")]):
             self._start("reconciliation", run_reconciliation)
             self.assertTrue(policy_held.wait(timeout=30), self.results)
-            self._start("completion", complete_observation)
+            self._start("completion", publish_receipt)
             self._join()
 
         self.assertNotIsInstance(self.results["completion"], BaseException)

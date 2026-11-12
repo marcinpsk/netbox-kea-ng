@@ -37,7 +37,7 @@ from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
 from .ipam_reconciliation import SyncReport
 from .ipam_sources import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET
-from .ipam_upgrade_barrier import complete_job_observation, upgrade_counts
+from .ipam_upgrade_barrier import complete_observation, upgrade_counts
 from .sync_plan import SyncPlan, any_source_enabled, server_sync_enabled, sync_plan
 from .sync_run_result import CONFLICT_SAMPLE_SIZE, SyncRunResult, SyncRunState, store
 
@@ -57,7 +57,7 @@ def _failed_facts(summary: ImportSummary) -> int:
     from .integrations.dhcp_import_report import Reason
 
     failed = (Reason.READ_FAILED, Reason.WRITE_FAILED)
-    return sum(entry.reason in failed for entry in summary.entries) + summary.ownership_errors
+    return sum(entry.reason in failed for entry in summary.entries) + summary.ownership.errors
 
 
 class _SyncJobRequest(HttpRequest):
@@ -115,7 +115,7 @@ def _sync_one_server(server: Server, plan: SyncPlan, max_leases: int) -> SyncRep
         reports[version] = reconcile(server, version, phases)
         combined.merge(reports[version])
 
-    complete_job_observation(server, reports)
+    complete_observation(server, "job", {version: report.coverage() for version, report in reports.items()})
 
     if combined.disagreements:
         sample = sorted(combined.disagreements)[:CONFLICT_SAMPLE_SIZE]

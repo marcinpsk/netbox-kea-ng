@@ -12,18 +12,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .. import kea_paths
+from .dhcp_import_ownership import ImportOwnership
 from .dhcp_import_report import ImportEntry, Kind, Outcome, Reason
 
 if TYPE_CHECKING:
-    from ..ipam_reconciliation import SyncReport
+    from ..ipam_upgrade_barrier import ObservationCoverage
 
 logger = logging.getLogger(__name__)
-
-
-def _ownership_report() -> SyncReport:
-    from ..ipam_reconciliation import SyncReport
-
-    return SyncReport()
 
 
 class Count:
@@ -44,15 +39,12 @@ class ImportSummary:
     Every DHCP fact count is a count of :attr:`entries`, so nothing is counted without an entry.
     """
 
-    ownership: SyncReport = field(default_factory=_ownership_report)
+    ownership: ImportOwnership = field(default_factory=ImportOwnership)
     entries: list[ImportEntry] = field(default_factory=list)
     foreign_addresses_skipped: int = 0
-    owner_disagreements: int = 0
     # Reserved addresses with no NetBox IP to attach. A Global Reservation has no
     # Subnet to size an address from, so the import never creates one for it.
     addresses_unattached: int = 0
-    # IPAM reconciliation errors of the delegated-prefix phase; DHCP write failures are entries.
-    ownership_errors: int = 0
     warnings: list[str] = field(default_factory=list)
 
     subnets_created = Count(Kind.SUBNET, Outcome.CREATED)
@@ -73,6 +65,11 @@ class ImportSummary:
     shared_networks_updated = Count(Kind.SHARED_NETWORK, Outcome.UPDATED)
 
     shared_networks_unsupported = Count(Kind.SHARED_NETWORK, Outcome.UNSUPPORTED)
+
+    @property
+    def owner_disagreements(self) -> int:
+        """Return the IPAM objects whose owners disagree, so the import left them unchanged."""
+        return self.ownership.disagreements
 
     @property
     def removed(self) -> int:
@@ -104,7 +101,13 @@ class ImportSummary:
             entry.reason == Reason.WRITE_FAILED and entry.kind not in (Kind.OPTION, Kind.OPTION_DEFINITION)
             for entry in self.entries
         )
-        return sum(failed) + self.ownership_errors
+        return sum(failed) + self.ownership.errors
+
+    def coverage(self) -> ObservationCoverage:
+        """Return what the run observed for the import receipt: complete only with every source complete and no error."""
+        from ..ipam_upgrade_barrier import ObservationCoverage
+
+        return ObservationCoverage(self.ownership.complete and not self.errors, self.ownership.completed_sources)
 
     def warn(self, message: str, error: BaseException | None = None) -> None:
         """Record a non-fatal warning and log it, with the traceback of *error* when one caused it."""

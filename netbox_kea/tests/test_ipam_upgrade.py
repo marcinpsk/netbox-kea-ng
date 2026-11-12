@@ -129,7 +129,7 @@ class UpgradeAdoptionTest(TestCase):
 
     def test_import_completion_requires_complete_evidence_and_enabled_import(self):
         from netbox_kea.ipam_reconciliation import SyncReport
-        from netbox_kea.ipam_upgrade_barrier import complete_import_observation
+        from netbox_kea.ipam_upgrade_barrier import complete_observation
 
         server = _server("job-only", sync_dhcp_plugin_enabled=False)
         complete = SyncReport(completed_sources={"subnet", "pool", "reservation"})
@@ -141,7 +141,9 @@ class UpgradeAdoptionTest(TestCase):
             {4: complete},
         ):
             with self.subTest(reports=reports):
-                complete_import_observation(server, reports)
+                complete_observation(
+                    server, "import", {family: report.coverage() for family, report in reports.items()}
+                )
                 server.refresh_from_db()
                 self.assertEqual(server.ipam_initial_observations, {})
                 self.assertIsNone(server.ipam_first_complete_at)

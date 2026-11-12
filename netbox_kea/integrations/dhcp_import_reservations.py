@@ -28,7 +28,7 @@ from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, Reservation, identity_tex
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import MANAGED_FIELDS
 from .dhcp_import_mappings import mapped_target, unlinked
-from .dhcp_import_networks import SubnetIdSettlement, record_report
+from .dhcp_import_networks import SubnetIdSettlement
 from .dhcp_import_options import OptionReferences, option_paths, upsert_options
 from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options
 from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
@@ -39,7 +39,7 @@ from .dhcp_import_write import LateOutcome, NotWritten, RowAdapter, RowState, Wr
 from .dhcp_plugin_capabilities import plugin_model
 
 if TYPE_CHECKING:
-    from ..ipam_reconciliation import ClaimResult, ReservationObservation, ReservationPrefixPhase, SyncReport
+    from ..ipam_reconciliation import ClaimResult, ReservationObservation, ReservationPrefixPhase
     from ..subnet_catalogue import CatalogueSnapshot
     from .dhcp_import_plan import Planned, PlannedOptions, ReservationKey
 
@@ -300,20 +300,6 @@ def _relation_states(objs) -> dict[int, dict[str, frozenset[int]]]:
     return {pk: {name: frozenset(related) for name, related in state.items()} for pk, state in states.items()}
 
 
-def _record_address_claims(report: SyncReport, claims: ClaimResult) -> bool:
-    """Keep ownership outcomes separate from the DHCP rows that consume them."""
-    report.conflicts.update(claims.conflicts)
-    complete = True
-    for address, result in claims.addresses.items():
-        if result.outcome == "error":
-            complete = False
-        elif result.outcome == "conflict":
-            report.conflicts.add(address)
-        elif result.outcome == "disagreement":
-            report.disagreements.add(address)
-    return complete
-
-
 def _record_snapshot_diagnostics(observation: ReservationObservation, family: int, summary: ImportSummary) -> None:
     """Record each quarantined record, and one entry for a traversal that did not read every record."""
     snapshot = observation.snapshot
@@ -382,15 +368,15 @@ def import_reservation_snapshot(
                 "The Reservation Snapshot could not be read.",
             )
         )
-        summary.ownership.incomplete.add(RESERVATION)
+        summary.ownership.mark_incomplete(RESERVATION)
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
     claims = claim(server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue)
-    summary.owner_disagreements += sum(result.outcome == "disagreement" for result in claims.addresses.values())
     imported: list[tuple[Planned[ReservationKey, Reservation], LateOutcome]] = []
     complete = snapshot.complete and not snapshot.diagnostics
-    complete = _record_address_claims(summary.ownership, claims) and complete
+    # The claim covers every record before any DHCP row is written, so a Reservation that is not written still counts.
+    summary.ownership.claimed(RESERVATION, claims.addresses, complete=complete)
     for planned in keyed_reservations(observation):
         reservation, key = planned.intent, planned.key
         subnet_obj, stopped = None, None
@@ -412,7 +398,8 @@ def import_reservation_snapshot(
         )
         result = write_row(adapter)
         if isinstance(result, NotWritten):
-            complete = False
+            # The delegated Prefixes of a Reservation that is not written are not claimed again.
+            complete = complete and not any(_reported_prefixes(reservation).values())
             continue
         upsert_options(scope, result.row, options, references)
         imported.append((planned, result))
@@ -431,10 +418,6 @@ def import_reservation_snapshot(
             )
         failed = frozenset(address for address, result in prefix_claims.prefixes.items() if result.outcome == "error")
         step = DelegatedPrefixStep(ReservationPrefixPhase(records, observation.cutoff, complete and not failed), failed)
-        if complete:
-            summary.ownership.completed_sources.add(RESERVATION)
-        else:
-            summary.ownership.incomplete.add(RESERVATION)
     except event_scope.EventDispatchError:
         raise
     except Exception:
@@ -447,7 +430,7 @@ def import_reservation_snapshot(
                 "Delegated Prefixes could not be attached. See server logs.",
             )
         )
-        summary.ownership.incomplete.add(RESERVATION_PREFIX)
+        summary.ownership.mark_incomplete(RESERVATION_PREFIX)
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
     relations = _relation_states([late.row for _, late in imported])
@@ -481,8 +464,7 @@ def reconcile_delegated_prefixes(
 
     complete = step.phase.complete and Kind.RESERVATION not in unobserved
     report = reconcile(server, family, [replace(step.phase, complete=complete)])
-    record_report(summary, report)
-    summary.ownership_errors += sum(report.prefixes[address].outcome != "error" for address in step.failed)
+    summary.ownership.reconciled(step.phase.source, report, attach_failures=step.failed)
     for address in sorted(report.conflicts):
         summary.warn(f"delegated prefix {address}: IPAM ownership conflict, Prefix left unchanged")
 

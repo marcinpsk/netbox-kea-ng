@@ -17,6 +17,14 @@ drops the links and reports a conflict, also when the phase reports the object t
 plugin reference guard reads, under the row lock, whether a DHCP plugin row references that one object, so a
 reference added during the cleanup keeps the object._
 
+_Amended 2026-11-10 (marcinpsk/netbox-kea-ng#283): a DHCP Import run is a Complete IPAM Observation only when every
+source is complete and no write failed, except an Option or Option Definition write, which changes no IPAM object. A
+Reservation that the import does not write (an identifier that the DHCP plugin cannot hold, or a Subnet that the
+import did not write) still completes the Reservation source, because the import claims its addresses before it
+writes any DHCP row. It leaves the Reservation delegated-prefix source incomplete when it reports delegated
+prefixes, because the import does not claim them again. Before, any Reservation that was not written kept both
+sources incomplete, so a permanent gap stopped the Server's import observation for good._
+
 ## Context
 
 The IPAM synchronization treats a NetBox IP address as its own when the description starts with
@@ -280,9 +288,12 @@ identities, the global VRF first. For a marker IP address in the global VRF, the
 Adoption marks the links that it creates, and a link that a run creates for an object with a marked link is marked
 too. Each Server records when its first complete run after the upgrade finished. Until every Server that
 synchronizes IPAM has finished that run, a phase does not remove the last link of an object with a marked link, so
-an owner that is not yet known cannot lose the object. A run is complete when every phase that the Server enables
-is complete. A family or source that a Server does not synchronize makes that Server no owner, so the barrier
-does not wait for it. The job summary counts the objects that wait for this.
+an owner that is not yet known cannot lose the object. A run is complete when every phase that the Server enables is
+complete. A DHCP Import run is also complete only when no write failed (a failed Option or Option Definition write
+changes no IPAM object, so it does not count), and a Reservation that it does not write still completes the
+Reservation source but not the Reservation delegated-prefix source when it reports delegated prefixes. A family or
+source that a Server does not synchronize makes that Server no owner, so the barrier does not wait for it. The job
+summary counts the objects that wait for this.
 
 Marker objects that no Server adopts stay unowned, and the job summary counts them for explicit handling by the
 operator.

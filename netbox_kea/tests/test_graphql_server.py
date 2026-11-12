@@ -6,7 +6,8 @@
 absent from GraphQL until someone remembers to list it. The sync fields shipped
 that way. The credentials stay out on purpose: GraphQL has no write-only
 equivalent of the serializer's ``write_only``, so listing them would publish
-them.
+them. ``persist_config`` stays out too: it is edit-form and CSV-import only, as
+on the REST API.
 """
 
 import json
@@ -25,12 +26,14 @@ User = get_user_model()
 
 
 #: Never publish a credential over GraphQL. custom_field_data is NetBox's own JSON
-#: store, which CustomFieldsMixin exposes as ``custom_fields``.
+#: store, which CustomFieldsMixin exposes as ``custom_fields``. persist_config is
+#: left out on both APIs on purpose (see test_api_server_sync_fields).
 GRAPHQL_OMISSIONS = {
     "ca_password",
     "dhcp4_password",
     "dhcp6_password",
     "custom_field_data",
+    "persist_config",
 }
 
 SYNC_BOOLEANS = (
@@ -100,7 +103,7 @@ class TestServerGraphQLQuery(TestCase):
         return payload["data"]
 
     def test_query_returns_every_sync_field_and_the_vrf(self):
-        fields = "\n".join((*SYNC_BOOLEANS, "persist_config"))
+        fields = "\n".join(SYNC_BOOLEANS)
         data = self._query(
             f"""
             query {{
@@ -117,8 +120,17 @@ class TestServerGraphQLQuery(TestCase):
         self.assertEqual(server["name"], "graphql-sync")
         for name in SYNC_BOOLEANS:
             self.assertEqual(server[name], getattr(self.server, name), f"{name} is wrong")
-        self.assertFalse(server["persist_config"])
         self.assertEqual(server["sync_vrf"]["name"], "graphql-sync-vrf")
+
+    def test_persist_config_cannot_be_queried(self):
+        response = self.client.post(
+            reverse("graphql"),
+            data=json.dumps({"query": f"query {{ server(id: {self.server.pk}) {{ persist_config }} }}"}),
+            content_type="application/json",
+        )
+
+        errors = response.json().get("errors", [])
+        self.assertTrue(any("persist_config" in error["message"] for error in errors), response.content)
 
     def test_sync_vrf_is_null_when_unset(self):
         self.server.sync_vrf = None
