@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 
 NetBox queues an event for each change and sends the queue to event rules and webhooks when the request or
 job ends. The plugin writes each sync row, each DHCP-plugin import family and each import receipt in its own
-transaction. On NetBox 4.6.9 and later, when such a transaction starts with no other transaction open in a request or in the
+transaction. A sync row holds one IP address and the MAC addresses of its hardware addresses. On NetBox 4.6.9 and later, when such a transaction starts with no other transaction open in a request or in the
 IPAM sync job, NetBox dispatches its events right after its COMMIT, and none when it rolls back. A failed row or
 family then sends no event for the changes that it reverted. This has these consequences:
 
@@ -25,10 +25,14 @@ family then sends no event for the changes that it reverted. This has these cons
   that one. The bulk Reservation Sync stops and shows an error on the Reservations tab. A row Sync button shows the
   sync result and a separate error.
 
-The sync refuses a Reservation row before its first IP address or MAC address write when a hardware address
-is not an EUI-48 address, or when NetBox has more than one MAC address row for it. A row whose address
-is a conflict is reported as a conflict. The exception is a legacy address in the global table: the sync moves it
-into its VRF before it finds that its description cannot fit, so a bad hardware address refuses that row.
+The DHCP-plugin import refuses a Reservation row before its first IP address or MAC address write when a hardware
+address is not an EUI-48 address, or when NetBox has more than one MAC address row for it, because the DHCP plugin
+links the Reservation to that MAC address row. A row whose address is a conflict is reported as a conflict. The
+exception is a legacy address in the global table: the import moves it into its VRF before it finds that its
+description cannot fit, so a bad hardware address refuses that row.
+
+The IPAM sync job, Run Now, the bulk Reservation Sync and a row Sync button write the IP address of such a
+Reservation and no MAC address row for that hardware address.
 
 Known limits. NetBox gives a plugin no public way to remove one event from its queue, so these remain:
 

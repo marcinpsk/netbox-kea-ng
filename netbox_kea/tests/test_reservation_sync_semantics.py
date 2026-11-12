@@ -39,7 +39,9 @@ class TestTypedReservationSynchronization(TestCase):
         subnets = {4: [{"id": 20, "subnet": "198.18.0.0/24"}], 6: [{"id": 30, "subnet": "2001:db8::/64"}]}
         with stub_kea(_catalogue_responses_for_subnets(reservation.family, subnets[reservation.family])):
             catalogue = for_synchronization(self.server, reservation.family)
-        return claim(self.server, reservation.family, [reservation], force=False, catalogue=catalogue)
+        return claim(
+            self.server, reservation.family, [reservation], force=False, catalogue=catalogue, require_macs=True
+        )
 
     def test_synchronizes_every_ipv6_address_as_one_result(self):
         reservation = IPv6Reservation(

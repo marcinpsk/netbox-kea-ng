@@ -372,7 +372,10 @@ def import_reservation_snapshot(
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
-    claims = claim(server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue)
+    # The DHCP plugin links a Reservation to its MAC address row, so the import requires one.
+    claims = claim(
+        server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue, require_macs=True
+    )
     imported: list[tuple[Planned[ReservationKey, Reservation], LateOutcome]] = []
     complete = snapshot.complete and not snapshot.diagnostics
     # The claim covers every record before any DHCP row is written, so a Reservation that is not written still counts.
