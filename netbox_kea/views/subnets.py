@@ -90,7 +90,7 @@ class ServerSubnetsView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectChild
         presented = present_subnets(
             instance,
             fetch_subnets(instance, self.dhcp_version, live="export" in request.GET),
-            writable={instance.pk} if self.access.can_change else frozenset(),
+            writable=self.access.writable,
             return_url=safe_return_url(request, request.get_full_path()),
         )
         search_form = forms.SubnetSearchForm(request.GET or None)

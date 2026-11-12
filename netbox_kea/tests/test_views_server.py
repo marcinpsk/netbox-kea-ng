@@ -700,7 +700,7 @@ class TestServerFilterForm(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# The Server access gate — 403 for a view-only user on a change view
+# The Server access gate: 403 for a view-only user on a change view
 # ---------------------------------------------------------------------------
 
 

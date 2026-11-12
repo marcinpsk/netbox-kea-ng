@@ -15,7 +15,6 @@ from .. import config_write, forms, managed_fields, server_configuration, tables
 from ..models import Server
 from ..utilities import export_table
 from ._base import (
-    ConditionalLoginRequiredMixin,
     run_change,
     safe_return_url,
 )
@@ -47,7 +46,7 @@ class ServerSharedNetworksView(FamilyRouteMixin, ServerAccessMixin, generic.Obje
         presented = present_shared_networks(
             instance,
             fetch_shared_networks(instance, self.dhcp_version),
-            writable={instance.pk} if self.access.can_change else frozenset(),
+            writable=self.access.writable,
             return_url=safe_return_url(request, request.get_full_path()),
         )
         table_data = self.prep_table_data(request, presented.rows, instance)
@@ -86,7 +85,7 @@ class ServerSharedNetworksView(FamilyRouteMixin, ServerAccessMixin, generic.Obje
         )
 
 
-class ServerSharedNetworkAddView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerSharedNetworkAddView(FamilyRouteMixin, ServerAccessMixin, View):
     """Add a new shared network to a Kea server."""
 
     server_action = "change"
@@ -143,7 +142,7 @@ class ServerSharedNetworkAddView(FamilyRouteMixin, ServerAccessMixin, Conditiona
         return redirect(safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetworkDeleteView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerSharedNetworkDeleteView(FamilyRouteMixin, ServerAccessMixin, View):
     """Delete a shared network from a Kea server.
 
     The network name is passed as a URL kwarg ``network_name``.  Subnets that
@@ -188,7 +187,7 @@ class ServerSharedNetworkDeleteView(FamilyRouteMixin, ServerAccessMixin, Conditi
         return redirect(safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetworkEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerSharedNetworkEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit a Shared Network's managed configuration fields."""
 
     server_action = "change"

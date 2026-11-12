@@ -69,7 +69,7 @@ def _run_option_change(
     return True
 
 
-class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit the DHCP Options of one Subnet."""
 
     server_action = "change"
@@ -167,7 +167,7 @@ class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, Condition
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ServerDHCPOptionsEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerDHCPOptionsEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit the server-global DHCP Options of one family."""
 
     server_action = "change"
@@ -309,7 +309,7 @@ def _daemon_online(server: Server, version: Family) -> bool:
     return not isinstance(read, ReadFailure)
 
 
-class CombinedServerStatusBadgeView(ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class CombinedServerStatusBadgeView(ServerAccessMixin, View):
     """HTMX endpoint: lightweight status fragment for one server.
 
     Returns a small HTML snippet containing one badge per enabled DHCP
@@ -345,7 +345,7 @@ class CombinedServerStatusBadgeView(ServerAccessMixin, ConditionalLoginRequiredM
 
 
 @register_model_view(Server, "option_def_tab", path="dhcp4/option-def", kwargs={"family": 4})
-class ServerOptionDefView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerOptionDefView(FamilyRouteMixin, ServerAccessMixin, View):
     """List the Option Definitions of one family of a Kea Server."""
 
     server_action = "view"
@@ -393,7 +393,7 @@ class ServerOptionDefView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
         return render(request, "netbox_kea/server_option_def_list.html", ctx)
 
 
-class ServerOptionDefAddView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerOptionDefAddView(FamilyRouteMixin, ServerAccessMixin, View):
     """Add a custom option definition to a Kea server."""
 
     server_action = "change"
@@ -454,7 +454,7 @@ class ServerOptionDefAddView(FamilyRouteMixin, ServerAccessMixin, ConditionalLog
         return redirect(self._success_url(server))
 
 
-class ServerOptionDefDeleteView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerOptionDefDeleteView(FamilyRouteMixin, ServerAccessMixin, View):
     """Delete a custom option definition from a Kea server.
 
     The option code and space are passed as URL kwargs.

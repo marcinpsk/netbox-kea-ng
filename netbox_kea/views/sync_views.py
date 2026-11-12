@@ -50,7 +50,6 @@ from ..utilities import (
 )
 from ._base import (
     ChangeLoop,
-    ConditionalLoginRequiredMixin,
     OutcomeT,
     RowT,
     client_or_refusal,
@@ -101,7 +100,7 @@ def _manual_sync_reply(
     )
 
 
-class ServerLeaseSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseSyncView(FamilyRouteMixin, ServerAccessMixin, View):
     """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
     server_action = "view"
@@ -147,7 +146,7 @@ class ServerLeaseSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
         return _manual_sync_reply(request, outcome, f"Lease {label}")
 
 
-class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
     server_action = "view"
@@ -192,7 +191,7 @@ class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, Conditional
         return _manual_sync_reply(request, outcome, "Reservation", record)
 
 
-class ServerReservationBulkSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationBulkSyncView(FamilyRouteMixin, ServerAccessMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
 
     server_action = "view"
@@ -247,7 +246,7 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerAccessMixin, Conditi
         return HttpResponseRedirect(redirect_url)
 
 
-class ReservationCheckNetboxIPView(ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ReservationCheckNetboxIPView(ServerAccessMixin, View):
     """Advisory GET endpoint: report what saving the Reservation does to the IP address *ip* in NetBox IPAM.
 
     Used by the Reservation form to warn, without blocking. Server-scoped via ``pk`` so the existing ``Server``
@@ -375,7 +374,7 @@ class _ImportRefusal:
     lines: tuple[str, ...]
 
 
-class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, View):
     """Validate one document, then create its Reservations, one Configuration Change for each entry (ADR 0012).
 
     An entry that Kea did not apply or did not confirm stops the import.
@@ -563,7 +562,7 @@ def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class ServerLeaseBulkImportView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseBulkImportView(FamilyRouteMixin, ServerAccessMixin, View):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.

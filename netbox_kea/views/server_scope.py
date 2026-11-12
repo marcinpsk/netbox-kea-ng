@@ -143,6 +143,11 @@ class ServerAccess:
         """Return whether the user may delete the Server."""
         return permitted_servers(self.user, "delete").filter(pk=self.server.pk).exists()
 
+    @property
+    def writable(self) -> frozenset[int]:
+        """Return the pk of the Server when the user may change it, in the form of ``writable_servers()``."""
+        return frozenset((self.server.pk,)) if self.can_change else frozenset()
+
     def permitted_actions(self, actions: Iterable[Any]) -> list[Any]:
         """Keep the NetBox object *actions* whose change or delete permission the user holds on this Server.
 

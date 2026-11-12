@@ -92,7 +92,6 @@ from ..utilities import (
 )
 from ._base import (
     IPAM_UNREADABLE,
-    ConditionalLoginRequiredMixin,
     LazyClient,
     NetBoxRequest,
     client_or_refusal,
@@ -685,7 +684,7 @@ def _shown_row(shown: ShownLease) -> dict[str, Any]:
     }
 
 
-class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, View):
     """Edit a single Lease via ``lease{v}-update``.
 
     The route target is the address, or ``address/length`` for a delegated prefix. The page carries the
