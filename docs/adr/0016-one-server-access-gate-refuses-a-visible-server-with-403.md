@@ -26,20 +26,26 @@ queryset by the action of the view.
 
 Every Server view passes one gate, `ServerAccessMixin` in `views/server_scope.py`. A view names the action of its
 handlers in `server_action`: `"view"`, or `"change"` (which needs view too). The gate loads the Server once and
-applies one refusal rule:
+applies one refusal rule. Each action except view needs view too, so `permitted_servers()` gives the Servers that
+the user may view and take the action on:
 
 | User | Reply |
 | --- | --- |
 | Anonymous, and the Server needs a login | The login redirect |
 | May not view the Server | 404 |
-| May view the Server, may not change it, and the view changes it | 403 with one message |
+| May view the Server, may not change (or delete) it, and the view changes (or deletes) it | 403 with one message |
 
 The rule gives 403, not NetBox's 404, for a Server that the user can see. The user can open the Server, so a 404
 hides nothing, and it reads as a broken link. A 403 says what is missing.
 
-Run Now and the Sync toggle follow the rule through the same refusal function. They do not declare
-`server_action`, because the branch controls (`branching.mutation_form`) treat each gated change view as a change
-form, and these POST-only actions are not one.
+Four views follow the rule through the same refusal function, `server_access()`, and do not declare
+`server_action`:
+
+- Run Now and the Sync toggle, because the branch controls (`branching.mutation_form`) treat each gated change view
+  as a change form, and these POST-only actions are not one.
+- The Server switch, because it leaves its Server, so the disabled family of that Server does not stop it.
+- NetBox's Server edit and delete views, with the change and the delete action, on a route with a `pk`. Their add
+  form and the bulk views keep NetBox's check.
 
 Run Now and the Sync toggle need only the change permission on the Server. A user with that permission can switch
 the IPAM sync of the Server on, and the scheduled run then makes the same IPAM writes, so an IPAM grant adds no
@@ -52,8 +58,8 @@ a record that the operator selects, at once.
 - Run Now and the Sync toggle give 403, not 404, to a viewer with a change grant constrained to other Servers.
 - The header Edit and Delete buttons, the Server Options link and the Create Reservation links follow the object
   permissions of the Server.
-- NetBox's own Server edit and delete views keep NetBox's replies, because they also serve the add form and the
-  bulk views.
+- The Server edit and delete pages give 403, not NetBox's 404, for a viewable Server outside the grant, and 404 for a
+  Server that the user may not view, also when the user holds the change or delete grant.
 - The OpenGrep rule `kea-server-permission-outside-server-scope` refuses a Server permission read in another module.
 
 ## Rejected alternatives

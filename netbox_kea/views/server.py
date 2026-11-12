@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect
 from django.template.loader import render_to_string
@@ -26,7 +27,7 @@ from ..utilities import (
 )
 from ._base import LazyClient, daemon_status, daemon_version, safe_return_url
 from .notices import Notice, inline_notices, notice
-from .server_scope import ServerAccessMixin
+from .server_scope import ServerAccessMixin, server_access
 from .workspace import server_context, with_return_url
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,12 @@ class ServerEditView(generic.ObjectEditView):
     template_name = "netbox_kea/server_edit.html"
     form = forms.ServerForm
 
+    def dispatch(self, request, *args, **kwargs):
+        """Apply the refusal rule of the gate to an edit; the add form keeps NetBox's check."""
+        if "pk" in kwargs and isinstance(refusal := server_access(request, kwargs["pk"], "change"), HttpResponse):
+            return refusal
+        return super().dispatch(request, *args, **kwargs)
+
 
 @register_model_view(Server, "delete")
 class ServerDeleteView(generic.ObjectDeleteView):
@@ -126,6 +133,12 @@ class ServerDeleteView(generic.ObjectDeleteView):
     template_name = "netbox_kea/server_delete.html"
 
     queryset = Server.objects.all()
+
+    def dispatch(self, request, *args, **kwargs):
+        """Apply the refusal rule of the gate to a delete."""
+        if isinstance(refusal := server_access(request, kwargs["pk"], "delete"), HttpResponse):
+            return refusal
+        return super().dispatch(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
         """Keep the scope inside the native modal's selected deletion form."""

@@ -16,12 +16,13 @@ runs without Kea requests.
 
 from __future__ import annotations
 
-from utilities.testing import APIViewTestCases, ViewTestCases, create_tags
+from django.test import override_settings
+from utilities.testing import APIViewTestCases, ViewTestCases, create_tags, post_data
 
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
-from .utils import with_kea_client_config
+from .utils import _grant, with_kea_client_config
 
 _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
@@ -100,6 +101,50 @@ class ServerViewTestCase(_ServerGenericTestMixin, ViewTestCases.PrimaryObjectVie
         instance = self._get_queryset().first()
 
         self.assertHttpStatus(self.client.get(instance.get_absolute_url()), 404)
+
+    def test_edit_object_without_permission(self):
+        """A Server that the user may not view is 404 on the edit route too (ADR 0016)."""
+        instance = self._get_queryset().first()
+        url = self._get_url("edit", instance)
+
+        self.assertHttpStatus(self.client.get(url), 404)
+        self.assertHttpStatus(self.client.post(url, post_data(self.form_data)), 404)
+
+    def test_delete_object_without_permission(self):
+        """A Server that the user may not view is 404 on the delete route too (ADR 0016)."""
+        instance = self._get_queryset().first()
+        url = self._get_url("delete", instance)
+
+        self.assertHttpStatus(self.client.get(url), 404)
+        self.assertHttpStatus(self.client.post(url, post_data({"confirm": True})), 404)
+        self.assertTrue(self._get_queryset().filter(pk=instance.pk).exists())
+
+    @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
+    def test_edit_object_with_constrained_permission(self):
+        """A viewable Server outside the change grant is 403, not NetBox's 404 (ADR 0016)."""
+        permitted, other = self._get_queryset().all()[:2]
+        _grant([Server], ["change"], user=self.user, constraints={"pk": permitted.pk})
+
+        self.assertHttpStatus(self.client.get(self._get_url("edit", permitted)), 200)
+        self.assertHttpStatus(self.client.get(self._get_url("edit", other)), 403)
+        self.assertHttpStatus(self.client.post(self._get_url("edit", permitted), post_data(self.form_data)), 302)
+        self.assertInstanceEqual(
+            self._get_queryset().get(pk=permitted.pk), self.form_data, exclude=self.validation_excluded_fields
+        )
+        self.assertHttpStatus(self.client.post(self._get_url("edit", other), post_data(self.form_data)), 403)
+
+    @override_settings(EXEMPT_VIEW_PERMISSIONS=["*"])
+    def test_delete_object_with_constrained_permission(self):
+        """A viewable Server outside the delete grant is 403, not NetBox's 404 (ADR 0016)."""
+        permitted, other = self._get_queryset().all()[:2]
+        _grant([Server], ["delete"], user=self.user, constraints={"pk": permitted.pk})
+
+        self.assertHttpStatus(self.client.get(self._get_url("delete", permitted)), 200)
+        self.assertHttpStatus(self.client.get(self._get_url("delete", other)), 403)
+        self.assertHttpStatus(self.client.post(self._get_url("delete", permitted), post_data({"confirm": True})), 302)
+        self.assertFalse(self._get_queryset().filter(pk=permitted.pk).exists())
+        self.assertHttpStatus(self.client.post(self._get_url("delete", other), post_data({"confirm": True})), 403)
+        self.assertTrue(self._get_queryset().filter(pk=other.pk).exists())
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)

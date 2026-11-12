@@ -13,7 +13,7 @@ from ..decimal_text import parse_decimal
 from ..models import Server
 from ._base import ConditionalLoginRequiredMixin, safe_return_url
 from .notices import notice, show_notices
-from .server_scope import ServerAccessMixin, permitted_servers
+from .server_scope import permitted_servers, server_access
 from .workspace import (
     WORKSPACE_SECTIONS,
     WorkspaceSection,
@@ -51,13 +51,16 @@ def _checked_filters(request: HttpRequest, target: Server, section: WorkspaceSec
     return query
 
 
-class ServerSwitchView(ServerAccessMixin, ConditionalLoginRequiredMixin, View):
-    """Switch only between viewable Servers and canonical workspace sections."""
+class ServerSwitchView(ConditionalLoginRequiredMixin, View):
+    """Switch only between viewable Servers and canonical workspace sections.
 
-    server_action = "view"
+    The switch leaves its Server, so it takes the refusal rule of the gate without the disabled-family state.
+    """
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Keep compatible search filters and reset all Server pagination."""
+        if isinstance(refusal := server_access(request, pk, "view"), HttpResponse):
+            return refusal
         targets = request.GET.getlist("target")
         try:
             target_pk = parse_decimal(targets[0]) if len(targets) == 1 else 0

@@ -223,16 +223,20 @@ class MutationFormSetTest(TestCase):
         )
 
 
-#: The Server routes that do not pass the gate, with the reason.
-_NOT_GATED = {
-    "server_edit": "NetBox's ObjectEditView, which also serves the add form, keeps NetBox's own permission check.",
-    "server_delete": "NetBox's ObjectDeleteView keeps NetBox's own permission check.",
-}
 #: Routes whose pk names another object.
 _NOT_A_SERVER = {"ipaddress_kea_reservations": "Its pk names an IP address."}
-#: Routes that call the refusal function in their handler, because a gated change view is a change form to the
-#: branch controls, and these POST-only actions are not.
-_REFUSAL_FUNCTION = {"server_sync_now": "change", "server_sync_toggle": "change"}
+#: Routes whose handler calls ``server_access()`` with this action instead of inheriting the gate, with the reason.
+_HANDLER_GATE = {
+    # A gated change view is a change form to the branch controls, and these POST-only actions are not.
+    "server_sync_now": "change",
+    "server_sync_toggle": "change",
+    # The switch leaves its Server, so the disabled family of that Server does not apply.
+    "server_switch": "view",
+    # NetBox's views, which also serve the add form and keep NetBox's check there.
+    "server_edit": "change",
+    "server_delete": "delete",
+}
+_POST_ONLY = frozenset(("server_sync_now", "server_sync_toggle"))
 
 
 def _server_routes() -> list[tuple[str, tuple[str, ...], type]]:
@@ -250,24 +254,20 @@ class GateCompletenessTest(TestCase):
     def test_every_server_route_view_declares_its_server_action(self):
         routes = _server_routes()
         names = {name for name, _parameters, _view_class in routes}
-        self.assertFalse(
-            (set(_NOT_GATED) | set(_REFUSAL_FUNCTION)) - names, "An exception names a route that no longer exists."
-        )
+        self.assertFalse(set(_HANDLER_GATE) - names, "An exception names a route that no longer exists.")
         missing = sorted(
             f"{name} ({view.__name__})"
             for name, _parameters, view in routes
-            if name not in _NOT_GATED
-            and name not in _REFUSAL_FUNCTION
+            if name not in _HANDLER_GATE
             and not (issubclass(view, ServerAccessMixin) and view.server_action in ("view", "change"))
         )
         self.assertEqual(missing, [], "Give each view the gate and a server_action, or list it with its reason.")
 
-    def test_the_refusal_function_routes_are_not_change_forms(self):
+    def test_the_handler_gated_routes_declare_no_server_action(self):
         for name, _parameters, view in _server_routes():
-            if name in _REFUSAL_FUNCTION:
+            if name in _HANDLER_GATE:
                 with self.subTest(route=name):
                     self.assertFalse(hasattr(view, "server_action"))
-                    self.assertFalse(hasattr(view, "get"))
 
 
 class RefusalRuleRouteTest(TestCase):
@@ -280,13 +280,13 @@ class RefusalRuleRouteTest(TestCase):
         for kind in ("viewer", "constrained", "changer"):
             self.users[kind] = User.objects.create_user(kind)
             _grant([Server], ["view"], user=self.users[kind])
-        _grant([Server], ["change"], user=self.users["constrained"], constraints={"pk": other.pk})
-        _grant([Server], ["change"], user=self.users["changer"])
+        _grant([Server], ["change", "delete"], user=self.users["constrained"], constraints={"pk": other.pk})
+        _grant([Server], ["change", "delete"], user=self.users["changer"])
 
     def _request(self, name: str, parameters: tuple[str, ...], view: type):
         url = _url(_NAMESPACE + name, parameters, pk=self.server.pk)
         # A POST-only gated view answers a GET after the gate with 405, so no handler runs.
-        if name in _REFUSAL_FUNCTION:
+        if name in _POST_ONLY:
             return self.client.post(url)
         return self.client.get(url)
 
@@ -308,9 +308,7 @@ class RefusalRuleRouteTest(TestCase):
         checked = set()
         with stub_kea(_KEA_DOWN):
             for name, parameters, view in _server_routes():
-                if name in _NOT_GATED:
-                    continue
-                action = _REFUSAL_FUNCTION.get(name) or view.server_action
+                action = _HANDLER_GATE.get(name) or view.server_action
                 expected = {
                     None: "login",
                     "none": "404",
@@ -326,7 +324,15 @@ class RefusalRuleRouteTest(TestCase):
                         self._assert_reply(self._request(name, parameters, view), reply)
                         checked.add((name, expected["viewer"]))
         self.assertTrue(
-            {("server_sync_now", "403"), ("server_leases", "pass"), ("server_subnet_edit", "403")} <= checked
+            {
+                ("server_sync_now", "403"),
+                ("server_leases", "pass"),
+                ("server_subnet_edit", "403"),
+                ("server_edit", "403"),
+                ("server_delete", "403"),
+                ("server_switch", "pass"),
+            }
+            <= checked
         )
 
 
@@ -345,3 +351,95 @@ class ServerLoadCountTest(_AccessTestCase):
         self.assertEqual(response.status_code, 302)
         loads = [query["sql"] for query in queries.captured_queries if 'FROM "netbox_kea_server"' in query["sql"]]
         self.assertEqual(len(loads), 1, loads)
+
+
+class SwitchFromDisabledFamilyTest(TestCase):
+    """The Server switch leaves its Server, so the disabled family of that Server does not stop it."""
+
+    def test_a_switch_from_a_disabled_family_page_opens_the_target(self):
+        source = _make_db_server(name="six-only", dhcp4=False, dhcp6=True)
+        target = _make_db_server(name="four-only", dhcp4=True, dhcp6=False)
+        user = User.objects.create_user("switcher")
+        _grant([Server], ["view"], user=user)
+        self.client.force_login(user)
+
+        with stub_kea({}) as kea:
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_switch", args=[source.pk]),
+                {"target": target.pk, "section": "leases", "family": "4"},
+            )
+
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": target.pk, "family": 4}),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(kea.commands(), [])
+
+
+class LinksNeedViewAndChangeTest(TestCase):
+    """A Create Reservation link names only a Server that the user may view and change, as the gate needs."""
+
+    def setUp(self):
+        self.viewed = _make_db_server(name="viewed-only")
+        self.changed = _make_db_server(name="changed-only")
+        self.user = User.objects.create_user("split-grants")
+        _grant([IPAddress], ["view"], user=self.user)
+        _grant([Server], ["view"], user=self.user, constraints={"pk": self.viewed.pk})
+        _grant([Server], ["change"], user=self.user, constraints={"pk": self.changed.pk})
+        self.client.force_login(self.user)
+        self.ip = IPAddress.objects.create(address=IPNetwork("192.0.2.10/24"))
+
+    def test_neither_page_links_a_server_that_the_user_may_not_view(self):
+        for page in (
+            reverse("ipam:ipaddress", args=[self.ip.pk]),
+            reverse("plugins:netbox_kea:ipaddress_kea_reservations", args=[self.ip.pk]),
+        ):
+            with self.subTest(page=page):
+                response = self.client.get(page)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, self.changed.name)
+                self.assertNotContains(
+                    response,
+                    reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.changed.pk, "family": 4}),
+                )
+
+
+class DhcpPluginSyncRefusalTest(_AccessTestCase):
+    """The DHCP plugin page names the one change refusal for a viewer."""
+
+    def test_the_page_names_the_change_refusal(self):
+        response = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+
+        self.assertEqual(response.context["sync_refusal"], _CHANGE_REFUSED)
+
+
+class ServerEditAndDeleteRefusalTest(_AccessTestCase):
+    """NetBox's Server edit and delete views on a pk follow the refusal rule of the gate."""
+
+    def _urls(self, server: Server) -> dict[str, str]:
+        return {
+            action: reverse(f"plugins:netbox_kea:server_{action}", args=[server.pk]) for action in ("edit", "delete")
+        }
+
+    def test_a_viewer_with_grants_constrained_to_another_server_gets_403(self):
+        for action, url in self._urls(self.server).items():
+            with self.subTest(action=action):
+                self.assertContains(self.client.get(url), _CHANGE_REFUSED, status_code=403)
+                self.assertContains(self.client.post(url, {"confirm": True}), _CHANGE_REFUSED, status_code=403)
+        self.assertTrue(Server.objects.filter(pk=self.server.pk).exists())
+
+    def test_a_server_that_the_user_may_not_view_is_404(self):
+        hidden = User.objects.create_user("no-view")
+        _grant([Server], ["change", "delete"], user=hidden)
+        self.client.force_login(hidden)
+        for action, url in self._urls(self.server).items():
+            with self.subTest(action=action):
+                self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_the_server_that_the_grants_name_opens_and_the_add_form_keeps_its_rule(self):
+        with stub_kea(_KEA_DOWN):
+            for action, url in self._urls(self.other).items():
+                with self.subTest(action=action):
+                    self.assertEqual(self.client.get(url).status_code, 200)
+            self.assertEqual(self.client.get(reverse("plugins:netbox_kea:server_add")).status_code, 403)

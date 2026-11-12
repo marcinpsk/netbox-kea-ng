@@ -106,8 +106,8 @@ def writable_servers(user: Any, servers: Iterable[Server]) -> frozenset[int]:
     return frozenset(permitted_servers(user, "change").filter(pk__in=pks).values_list("pk", flat=True))
 
 
-#: The action that a Server view needs on its Server: view it, or change it (which needs view too).
-ServerAction = Literal["view", "change"]
+#: The action that a Server view needs on its Server. Each action but view needs view too.
+ServerAction = Literal["view", "change", "delete"]
 
 #: The one refusal of a viewable Server that the user may not change.
 CHANGE_REFUSED = "You do not have permission to modify Kea server data."
@@ -116,8 +116,9 @@ SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 
 
 def permitted_servers(user: Any, action: ServerAction = "view") -> QuerySet[Server]:
-    """Return the Servers that *user* may view, or may change."""
-    return Server.objects.restrict(user, action)
+    """Return the Servers that *user* may view and, for another *action*, may also take that action on."""
+    viewable = Server.objects.restrict(user, "view")
+    return viewable if action == "view" else viewable.filter(pk__in=Server.objects.restrict(user, action))
 
 
 class ServerAccess:
@@ -126,9 +127,11 @@ class ServerAccess:
     def __init__(self, user: Any, server: Server, action: ServerAction = "view") -> None:
         self.user = user
         self.server = server
+        # The gate loaded the Server with the permission of its action.
         if action == "change":
-            # The gate loaded the Server with the change permission.
             self.can_change = True
+        if action == "delete":
+            self.can_delete = True
 
     @cached_property
     def can_change(self) -> bool:
@@ -138,7 +141,7 @@ class ServerAccess:
     @cached_property
     def can_delete(self) -> bool:
         """Return whether the user may delete the Server."""
-        return Server.objects.restrict(self.user, "delete").filter(pk=self.server.pk).exists()
+        return permitted_servers(self.user, "delete").filter(pk=self.server.pk).exists()
 
     def permitted_actions(self, actions: Iterable[Any]) -> list[Any]:
         """Keep the NetBox object *actions* whose change or delete permission the user holds on this Server.
@@ -180,19 +183,16 @@ def server_access(request: HttpRequest, pk: int, action: ServerAction) -> Server
     """Load the Server *pk* once for *action*, or return the refusal rule's reply (ADR 0016).
 
     An anonymous user gets the login redirect; a Server that the user may not view is 404; a viewable Server that
-    the user may not change is 403 for a change.
+    the user may not change or delete is 403 for that action.
     """
     if refusal := _login_refusal(request):
         return refusal
-    servers = permitted_servers(request.user)
-    if action == "change":
-        servers = servers.filter(pk__in=permitted_servers(request.user, "change"))
-    server = servers.filter(pk=pk).first()
+    server = permitted_servers(request.user, action).filter(pk=pk).first()
     if server is not None:
         return ServerAccess(request.user, server, action)
     if not request.user.is_authenticated:
         return redirect_to_login(request.get_full_path())
-    if action == "change" and permitted_servers(request.user).filter(pk=pk).exists():
+    if action != "view" and permitted_servers(request.user).filter(pk=pk).exists():
         return HttpResponseForbidden(CHANGE_REFUSED)
     raise Http404
 

@@ -41,7 +41,7 @@ from ..models import DhcpImportTrigger, Server
 from ..sync_permissions import sync_gate
 from ..tables import DhcpImportEntryTable
 from .notices import Notice
-from .server_scope import ServerAccess, ServerAccessMixin
+from .server_scope import CHANGE_REFUSED, ServerAccess, ServerAccessMixin
 from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
@@ -450,7 +450,7 @@ def _sync_refusal(access: ServerAccess) -> str:
     The import needs change permission on the Server and the manual Sync rule for its IPAM, DCIM and DHCP plugin writes.
     """
     if not access.can_change:
-        return "Sync to DHCP plugin needs change permission on this Server."
+        return CHANGE_REFUSED
     return sync_gate(access.user, dhcp_plugin.import_permissions(access.server)).reason
 
 

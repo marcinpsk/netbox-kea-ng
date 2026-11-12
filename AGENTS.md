@@ -809,18 +809,21 @@ resort, reserved for true external boundaries you cannot run locally.
   `get()` via `htmx_partial(request, ...)`. The hidden `page` field uses
   `VeryHiddenInput` (renders empty) to avoid form conflicts.
 - **Server access gate** (`views/server_scope.py`, ADR 0016): every view on a Server `pk` route inherits
-  `ServerAccessMixin` and names the action of its handlers in `server_action` (`"view"`, or `"change"`, which needs
-  view too). The gate loads the Server once and applies one refusal rule: an anonymous user gets the login redirect,
-  a Server that the user may not view is 404, and a viewable Server that the user may not change is 403 for a change
-  view. Then it refuses a disabled family. Handlers read `self.server`, and `self.access.can_change` (read once, on
-  first use) when they offer a change; a combined page uses `writable_servers`. The hooks `server_scope_access`
-  (before the lookup, unsafe methods) and `disabled_family_access` keep an action's own refusal. Run Now and the
-  Sync toggle call `server_access()` in their handlers, because `branching.mutation_form` treats each gated change
-  view as a change form. NetBox's Server edit and delete views keep NetBox's checks. The header Edit and Delete
-  buttons come from `ServerAccess.permitted_actions`. Only `server_scope` reads a Server permission (OpenGrep
-  `kea-server-permission-outside-server-scope`): other code gets permitted Servers from `permitted_servers()`.
-  The custom `bulk_delete_lease_from_server` check with `obj=` is the exception. `test_server_access.py` checks the
-  rule on every Server route and fails for a view that does not declare `server_action`.
+  `ServerAccessMixin` and names the action of its handlers in `server_action` (`"view"` or `"change"`). Each action
+  but view needs view too, and `permitted_servers()` applies the same rule. The gate loads the Server once and
+  applies one refusal rule: an anonymous user gets the login redirect, a Server that the user may not view is 404,
+  and a viewable Server that the user may not change is 403 for a change view. Then it refuses a disabled family.
+  Handlers read `self.server`, and `self.access.can_change` (read once, on first use) when they offer a change; a
+  combined page uses `writable_servers`. The hooks `server_scope_access` (before the lookup, unsafe methods) and
+  `disabled_family_access` keep an action's own refusal. Run Now and the Sync toggle call `server_access()` in their
+  handlers, because `branching.mutation_form` treats each gated change view as a change form. The Server switch
+  calls it too, because the disabled family of the Server that it leaves does not apply. NetBox's Server edit and
+  delete views call it with `"change"` and `"delete"` on a `pk`; their add form and the bulk views keep NetBox's
+  checks. The header Edit and Delete buttons come from `ServerAccess.permitted_actions`. Only `server_scope` reads a
+  Server permission (OpenGrep `kea-server-permission-outside-server-scope`): other code gets permitted Servers from
+  `permitted_servers()`. The custom `bulk_delete_lease_from_server` check with `obj=` is the exception.
+  `test_server_access.py` checks the rule on every Server route and fails for a view that does not declare
+  `server_action`.
 - **Private names**: a name that starts with `_` is private to its module. Make it public when another module
   imports it (OpenGrep `kea-private-name-import`, production code only).
 - **View registration**: standard CRUD uses `@register_model_view(Server)` /
