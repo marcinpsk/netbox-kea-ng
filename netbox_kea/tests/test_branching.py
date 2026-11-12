@@ -1950,6 +1950,10 @@ def _route_url(route: _Route, server: Server, ip: IPAddress) -> str:
     return f"{url}?{query}" if query else url
 
 
+#: The page that shows no link to a change form while a branch is active, as the IPAddress panel does, and that form.
+_NO_LINK_IN_BRANCH = {"ipaddress_kea_reservations": "server_reservation_add"}
+
+
 # A page GET that main answers with a redirect: NetBox's bulk views, the lease delete confirmation, and Settings.
 _MAIN_GET_REDIRECTS = frozenset(
     ("server_bulk_delete", "server_bulk_edit", "server_leases_delete", "server_status", "server_switch", "settings")
@@ -2231,34 +2235,8 @@ class RenderedBranchControlsTest(TransactionTestCase):
                     after = BeautifulSoup(response.content, "html.parser")
                     self._assert_no_active_mutation_targets(after, url, mutation_paths, plugin_paths)
                     for control in before.find_all(["a", "button", "input"]):
-                        if control.has_attr("disabled"):
-                            continue
-                        mutation = False
-                        for attr in ("href", "hx-get", "data-hx-get"):
-                            target = control.get(attr)
-                            if target and urlsplit(urljoin(url, target)).path in mutation_paths:
-                                mutation = True
-                        for attr in (
-                            "hx-post",
-                            "hx-put",
-                            "hx-patch",
-                            "hx-delete",
-                            "data-hx-post",
-                            "data-hx-put",
-                            "data-hx-patch",
-                            "data-hx-delete",
-                        ):
-                            target = control.get(attr)
-                            if target is not None and urlsplit(urljoin(url, target)).path in plugin_paths:
-                                mutation = True
-                        form = control.find_parent("form")
-                        kind = control.get("type", "submit" if control.name == "button" else "text")
-                        if form and kind in ("submit", "image"):
-                            method = control.get("formmethod", form.get("method", "get")).lower()
-                            target = control.get("formaction", form.get("action", ""))
-                            if method == "post" and urlsplit(urljoin(url, target)).path in plugin_paths:
-                                mutation = True
-                        if not mutation:
+                        target = self._mutation_target(control, url, mutation_paths, plugin_paths)
+                        if target is None:
                             continue
                         checked += 1
                         covered.add(_page(route))
@@ -2269,6 +2247,10 @@ class RenderedBranchControlsTest(TransactionTestCase):
                             and candidate.get("name") == control.get("name")
                             and candidate.get("value") == control.get("value")
                         ]
+                        omitted = _NO_LINK_IN_BRANCH.get(_page(route))
+                        if omitted is not None and resolve(target).url_name == omitted:
+                            self.assertEqual(candidates, [], f"the branch kept {control} on {url}")
+                            continue
                         self.assertTrue(candidates, f"the branch omitted {control} on {url}")
                         self.assertTrue(
                             any(candidate.get("aria-disabled") == "true" for candidate in candidates),
@@ -2285,6 +2267,37 @@ class RenderedBranchControlsTest(TransactionTestCase):
             "settings_section",
         ):
             self.assertIn(name, covered)
+
+    @staticmethod
+    def _mutation_target(control, url, mutation_paths, plugin_paths) -> str | None:
+        """Return the path that an enabled *control* changes through, or None for a control that changes nothing."""
+        if control.has_attr("disabled"):
+            return None
+        for attr in ("href", "hx-get", "data-hx-get"):
+            target = control.get(attr)
+            if target and urlsplit(urljoin(url, target)).path in mutation_paths:
+                return urlsplit(urljoin(url, target)).path
+        for attr in (
+            "hx-post",
+            "hx-put",
+            "hx-patch",
+            "hx-delete",
+            "data-hx-post",
+            "data-hx-put",
+            "data-hx-patch",
+            "data-hx-delete",
+        ):
+            target = control.get(attr)
+            if target is not None and urlsplit(urljoin(url, target)).path in plugin_paths:
+                return urlsplit(urljoin(url, target)).path
+        form = control.find_parent("form")
+        kind = control.get("type", "submit" if control.name == "button" else "text")
+        if form and kind in ("submit", "image"):
+            method = control.get("formmethod", form.get("method", "get")).lower()
+            target = control.get("formaction", form.get("action", ""))
+            if method == "post" and urlsplit(urljoin(url, target)).path in plugin_paths:
+                return urlsplit(urljoin(url, target)).path
+        return None
 
     def _assert_no_active_mutation_targets(self, page, url, mutation_paths, plugin_paths):
         for control in page.find_all(True):
