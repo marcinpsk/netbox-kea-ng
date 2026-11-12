@@ -1436,7 +1436,7 @@ rules:
       `ServerAccessMixin` and reads `self.server` and `self.access.can_change`; other code gets the permitted
       Servers from `permitted_servers()`, and a combined page from `writable_servers()`. The rule sees
       `Server.objects.restrict(...)` (also through a module), `get_object_or_404(Server...)` and
-      `has_perm("netbox_kea.<x>_server", ...)` in production code. Allowed: the custom
+      `has_perm("netbox_kea.<x>_server", ...)`, also with `perm=`, in production code. Allowed: the custom
       `has_perm("netbox_kea.bulk_delete_lease_from_server", obj=...)` check of a Lease delete. Limits: a queryset
       of another name, `has_perms()`, a permission name built at run time and NetBox's generic views are not seen.
     metadata:
@@ -1459,11 +1459,14 @@ rules:
               metavariable: $QUERYSET
               regex: ^(\w+\.)*Server\b
       - patterns:
-          - pattern: $USER.has_perm($PERMISSION, ...)
+          - pattern-either:
+              - pattern: $USER.has_perm($PERMISSION, ...)
+              - pattern: $USER.has_perm(..., perm=$PERMISSION, ...)
           - metavariable-regex:
               metavariable: $PERMISSION
               regex: ^["']netbox_kea\.\w+_server["']$
           - pattern-not: $USER.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=$OBJECT)
+          - pattern-not: $USER.has_perm(perm="netbox_kea.bulk_delete_lease_from_server", obj=$OBJECT)
 
   - id: kea-ownership-read-without-database-error
     languages: [python]

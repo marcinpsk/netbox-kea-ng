@@ -19,8 +19,12 @@ def views(request, pk, server, user):
     allowed = cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server", obj=server)
     # ruleid: kea-server-permission-outside-server-scope
     allowed = user.has_perm("netbox_kea.bulk_delete_lease_from_server")
+    # ruleid: kea-server-permission-outside-server-scope
+    allowed = user.has_perm(perm="netbox_kea.change_server", obj=server)
     # ok: kea-server-permission-outside-server-scope
     allowed = user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server)
+    # ok: kea-server-permission-outside-server-scope
+    allowed = user.has_perm(perm="netbox_kea.bulk_delete_lease_from_server", obj=server)
     # ok: kea-server-permission-outside-server-scope
     allowed = cast(PermissionsMixin, request.user).has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server)
     # ok: kea-server-permission-outside-server-scope
