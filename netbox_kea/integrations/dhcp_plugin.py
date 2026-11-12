@@ -161,7 +161,7 @@ def import_server_config(
     return apply_plan(server, plan_family(config, reservation_observation), probe())
 
 
-def _import_definitions_and_classes(
+def import_definitions_and_classes(
     scope: WriteScope, dhcp_server, plan: FamilyPlan, adoption_servers: tuple[int, ...]
 ) -> OptionReferences:
     """Write every custom Option Definition and client class of *plan*, before any DHCP Option references them.
@@ -181,7 +181,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     """Apply the plan of one ``(server, family)`` to the DHCP plugin, writing a gated fact only with its *capabilities*.
 
     Idempotent: re-running finds each row through its ``KeaDhcpLink`` mapping and updates it rather than
-    duplicating it. The steps run in one line. A step that reads the result of an earlier object reads it from the
+    duplicating it. The steps run in one fixed sequence. A step that reads the result of an earlier object reads it from the
     written store of the run, which refuses a read before the run decides the object.
     """
     from ..ipam_sources import POOL, SUBNET
@@ -203,7 +203,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     linked = link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
     if changed is not None and (created or changed or linked):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
-    references = _import_definitions_and_classes(scope, dhcp_server, plan, adopting)
+    references = import_definitions_and_classes(scope, dhcp_server, plan, adopting)
     declared = references.definitions.declared
     upsert_options(scope, dhcp_server, planned_options(plan.server, plan.family, declared), references)
     for planned_class in plan.client_classes:

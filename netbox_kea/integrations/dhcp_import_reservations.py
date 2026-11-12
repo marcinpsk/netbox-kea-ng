@@ -26,7 +26,7 @@ from ..published_name import reservation_published_name
 from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import MANAGED_FIELDS
-from .dhcp_import_mappings import unlinked
+from .dhcp_import_mappings import mapped_target, unlinked
 from .dhcp_import_options import OptionReferences, upsert_options
 from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options
 from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
@@ -145,7 +145,7 @@ class _ReservationAdapter(RowAdapter):
 
     scope: WriteScope
     key: ReservationKey
-    reservation: Reservation
+    planned: Planned[ReservationKey, Reservation]
     subnet_obj: Any
     dhcp_server: Any
     references: OptionReferences
@@ -157,6 +157,11 @@ class _ReservationAdapter(RowAdapter):
     _stored: dict[str, dict[int, Any]] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     late_outcome = True
+
+    @property
+    def reservation(self) -> Reservation:
+        """Return the typed Reservation."""
+        return self.planned.intent
 
     @cached_property
     def _addresses(self) -> tuple:
@@ -312,17 +317,21 @@ def _record_snapshot_diagnostics(observation: ReservationObservation, family: in
 
 
 def _reservation_subnet(scope: WriteScope, key: InSubnetReservationKey) -> tuple[Any, NotWritten | None]:
-    """Return the Subnet row of an In-Subnet Reservation from the written store, or why its Subnet was not written.
+    """Return the Subnet row of an In-Subnet Reservation, or why its Subnet was not written.
 
-    A Subnet whose Kea subnet ID another row keeps gives its own reason. A Subnet whose write failed, or that the plan
-    does not hold, was not imported.
+    A planned Subnet gives its result from the written store: a Subnet whose Kea subnet ID another row keeps gives its
+    own reason, and a Subnet whose write failed was not imported. A Subnet that the configuration read does not report
+    keeps its mapped row, else it was not imported.
     """
-    result = scope.written.result(SubnetKey(key.subnet_id))
+    not_imported = NotWritten(Reason.PARENT_NOT_IMPORTED, f"Subnet {key.subnet_id} was not imported.")
+    subnet_key = SubnetKey(key.subnet_id)
+    if subnet_key not in scope.written:
+        stored = mapped_target(scope.server, scope.family, subnet_key.source)
+        return (stored, None) if stored is not None else (None, not_imported)
+    result = scope.written.result(subnet_key)
     if not isinstance(result, NotWritten):
         return result, None
-    if result.covers_subtree:
-        return None, result
-    return None, NotWritten(Reason.PARENT_NOT_IMPORTED, f"Subnet {key.subnet_id} was not imported.")
+    return None, result if result.covers_subtree else not_imported
 
 
 def import_reservation_snapshot(
@@ -376,7 +385,7 @@ def import_reservation_snapshot(
         adapter = _ReservationAdapter(
             scope,
             key,
-            reservation,
+            planned,
             subnet_obj,
             dhcp_server,
             references,

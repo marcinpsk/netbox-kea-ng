@@ -29,6 +29,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import count
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from django.db.models import Q
@@ -359,7 +360,7 @@ def upsert_subnet(
     claims: ClaimResult,
     subnet_ids: SubnetIdSettlement,
     references: OptionReferences,
-):
+) -> Any:
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
     The Subnet reads the row of its Shared Network from the written store of the run. A Subnet whose Kea subnet ID
@@ -547,7 +548,7 @@ def settle_subnet_ids(
         if requester in chain:
             renumbered.add(key)
     if not moves:
-        return SubnetIdSettlement(taken, frozenset(renumbered), frozenset())
+        return SubnetIdSettlement(MappingProxyType(taken), frozenset(renumbered), frozenset())
     try:
         with event_scope.atomic():
             _move_subnet_ids(Subnet.objects.in_bulk(moves), moves, holds)
@@ -557,8 +558,8 @@ def settle_subnet_ids(
         # The Subnets that need a move fail. The others still import.
         logger.exception("DHCP-plugin import: the Subnets of %s could not take their Kea subnet IDs", server.name)
         summary.warn(f"Kea Subnets {sorted(dependent)} could not take their Kea subnet IDs: {exc}")
-        return SubnetIdSettlement(taken, frozenset(), frozenset(dependent))
-    return SubnetIdSettlement(taken, frozenset(renumbered), frozenset())
+        return SubnetIdSettlement(MappingProxyType(taken), frozenset(), frozenset(dependent))
+    return SubnetIdSettlement(MappingProxyType(taken), frozenset(renumbered), frozenset())
 
 
 @dataclass(frozen=True)
@@ -649,10 +650,15 @@ class _PoolAdapter(RowAdapter):
 
     scope: WriteScope
     key: PoolKey | InvalidPoolKey
-    intent: PoolIntent
+    planned: Planned[PoolKey | InvalidPoolKey, PoolIntent]
     subnet_obj: Any
     claims: ClaimResult
     classes: ClassReferences
+
+    @property
+    def intent(self) -> PoolIntent:
+        """Return the parsed Kea intent of the Pool."""
+        return self.planned.intent
 
     def _claim(self) -> RangeClaim | None:
         """Return the IPAM claim of the range, or ``None`` when the claim left the range out."""
@@ -709,7 +715,7 @@ class _PoolAdapter(RowAdapter):
 def upsert_pools(scope: WriteScope, subnet_obj, planned: PlannedSubnet, references: OptionReferences, claims) -> None:
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each planned Pool of *planned*."""
     for planned_pool in planned.pools:
-        adapter = _PoolAdapter(scope, planned_pool.key, planned_pool.intent, subnet_obj, claims, references.classes)
+        adapter = _PoolAdapter(scope, planned_pool.key, planned_pool, subnet_obj, claims, references.classes)
         row = write_row(adapter)
         if not isinstance(row, NotWritten):
             options = planned_options(planned_pool, scope.family, references.definitions.declared)

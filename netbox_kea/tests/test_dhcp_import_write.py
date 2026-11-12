@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
+import pytest
 from django.apps import apps
 from django.db import DatabaseError, transaction
 from django.db.models.signals import pre_save
@@ -1172,6 +1173,13 @@ _OPTION_ROWS = (
 )
 
 
+def _import(fixture: _Fixture, config: dict) -> ImportSummary:
+    """Run the DHCP Import of *config* for the Server of *fixture*, with the Reservation Snapshot of *config*."""
+    return dhcp_plugin.import_server_config(
+        fixture.server, parse_dhcp_config(config, fixture.family), _reservation_snapshot(config, fixture.family)
+    )
+
+
 def _in_scope(path: str, paths: tuple[str, ...]) -> bool:
     return any(path == each or path.startswith(f"{each}/") for each in paths)
 
@@ -1278,7 +1286,7 @@ class RowWriteTableTest(TestCase):
         config["subnet4"][0]["valid-lifetime"] = 7200
 
         with _refusing("Subnet") as refused:
-            summary = fixture.apply(config)
+            summary = _import(fixture, config)
 
         self.assertTrue(refused)
         self.assertEqual(
@@ -1293,10 +1301,48 @@ class RowWriteTableTest(TestCase):
         stored.refresh_from_db()
         self.assertEqual(stored.hostname, "host-a")
 
+    def test_a_reservation_of_a_mapped_subnet_that_the_configuration_does_not_hold_updates_its_row(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        fixture.apply_cleanly(_reservation())
+        stored = fixture.mapped(_RESERVATION_KEY)
+        config = _reservation("host-b")
+        without_subnet = {**config, "subnet4": []}
+
+        summary = dhcp_plugin.import_server_config(
+            fixture.server, parse_dhcp_config(without_subnet, 4), _reservation_snapshot(config, 4)
+        )
+
+        self.assertEqual(
+            [(entry.outcome, entry.reason) for entry in summary.entries if entry.path == _SUBNET_RESERVATION],
+            [(Outcome.UPDATED, None)],
+        )
+        # The Reservation attaches to the stored row of its Subnet, which the configuration read did not report.
+        stored.refresh_from_db()
+        self.assertEqual((stored.hostname, stored.subnet.subnet_id), ("host-b", 10))
+
+    # Each record of one identity has its own Reservation entry: a known limit of the one-entry rule.
+    @pytest.mark.repeated_import_fact(_SUBNET_RESERVATION)
+    def test_each_reservation_of_one_identity_skips_its_own_options(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        config = _reservation()
+        host = {**config["subnet4"][0]["reservations"][0], "subnet-id": 10}
+        # Kea allows one host in the configuration and in a host database, so the Snapshot holds both records.
+        hosts = [{**host, "option-data": [option]} for option in host["option-data"]]
+
+        with _refusing("Subnet"):
+            summary = dhcp_plugin.import_server_config(
+                fixture.server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4, hosts)
+            )
+
+        self.assertEqual(
+            Counter(entry.path for entry in summary.entries if entry.path.startswith(f"{_SUBNET_RESERVATION}/")),
+            Counter(_RESERVATION_OPTIONS),
+        )
+
 
 _ORDER = (
     "The apply writes the Option Definitions and the client classes before any DHCP Option, the Shared Networks "
-    "and the Subnet ID settlement before the Subnets, and the Subnets before the Reservations."
+    "before the Subnets, and the Subnets before the Reservations."
 )
 
 
@@ -1361,7 +1407,7 @@ class WriteOrderTest(TestCase):
         config = _reservation("host-b")
         plan = plan_family(parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
         scope = self._scope(fixture.server, plan)
-        references = dhcp_plugin._import_definitions_and_classes(scope, fixture.dhcp_server(), plan, ())
+        references = dhcp_plugin.import_definitions_and_classes(scope, fixture.dhcp_server(), plan, ())
 
         with self.assertRaisesMessage(WriteOrderError, f"A step reads {_SUBNET} before the run decides it."):
             import_reservation_snapshot(

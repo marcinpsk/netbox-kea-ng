@@ -23,6 +23,7 @@ from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_server import synthesized_name
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.ipam_reconciliation import (
     PoolClaim,
@@ -645,13 +646,7 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(self.delegated().status, "active")
 
     def _import_one_skipped_reservation(self, **skipped) -> ImportSummary:
-        """Run a DHCP Import whose Reservation is in Subnet 9, which the run does not write, so the Reservation is skipped.
-
-        An operator Subnet holds the name of Subnet 9. The earlier Reservation of Subnet 1, which Kea no longer reports,
-        is stale.
-        """
-        from netbox_kea.integrations.dhcp_import_server import synthesized_name
-
+        """Run a DHCP Import whose Reservation is in Subnet 9, whose name an operator Subnet holds, so it is skipped."""
         apps.get_model("netbox_dhcp", "Subnet").objects.create(
             name=synthesized_name(self.server.name, " DHCPv6 subnet 9"),
             prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:99::/64")),

@@ -587,7 +587,7 @@ class PlannedSubnet:
     def children(self) -> tuple[PlannedObject, ...]:
         """Return the planned children of the Subnet: its Pools, then its delegated-prefix Pools.
 
-        Its In-Subnet Reservations come from the Reservation Snapshot, so they are no children of the Subnet.
+        Its In-Subnet Reservations come from the Reservation Snapshot, so they are not children of the Subnet.
         """
         return (*self.pools, *self.pd_pools)
 
@@ -651,7 +651,7 @@ class FamilyPlan:
         return tuple(
             planned_options(planned, self.family, declared)
             for planned in self.objects()
-            if planned.key.kind in _OPTION_OWNERS
+            if planned.key.kind in _OPTION_PARENTS
         )
 
 
@@ -670,7 +670,7 @@ def planned_subtree(
     The DHCP Options of the object come first, then each child with its own subtree. An Option without a mapping
     source has no key.
     """
-    if planned.key.kind in _OPTION_OWNERS:
+    if planned.key.kind in _OPTION_PARENTS:
         options = planned_options(planned, family, declared)
         for key, path in zip(options.keys, options.paths(family), strict=True):
             yield Kind.OPTION, path, key
@@ -807,10 +807,16 @@ REMOVAL_ORDER: tuple[Kind, ...] = (
 # The kinds whose objects the configuration read observes. DHCP Options take the gaps of their parent kind.
 _CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION, Kind.OPTION}
 _CONFIGURATION_GAP = "The Server Configuration was not read in full."
-#: The mapped kinds whose objects assign DHCP Options. The global configuration of a family has no observation.
-_OPTION_PARENTS = (Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION)
-# The kinds of the planned objects that assign DHCP Options: each kind but the Option Definition.
-_OPTION_OWNERS = frozenset((Kind.SERVER, *_OPTION_PARENTS))
+#: The kinds whose objects assign DHCP Options: the global configuration, then each mapped kind but the definitions.
+_OPTION_PARENTS = (
+    Kind.SERVER,
+    Kind.CLIENT_CLASS,
+    Kind.SHARED_NETWORK,
+    Kind.SUBNET,
+    Kind.POOL,
+    Kind.PD_POOL,
+    Kind.RESERVATION,
+)
 
 
 def mapped_kinds(family: int) -> tuple[Kind, ...]:
@@ -950,7 +956,7 @@ def _option_gaps(
     dropped = Counter(entry.parent for entry in plan.dropped if entry.kind == Kind.OPTION)
     unkeyed = Counter(each.kind for each in options for key in each.keys if key is None)
     found = {}
-    for kind in (Kind.SERVER, *(kind for kind in _OPTION_PARENTS if kind in mapped_kinds(plan.family))):
+    for kind in (kind for kind in _OPTION_PARENTS if kind == Kind.SERVER or kind in mapped_kinds(plan.family)):
         if kind == Kind.SERVER:
             reasons = [] if plan.configuration_complete else [_CONFIGURATION_GAP]
         else:

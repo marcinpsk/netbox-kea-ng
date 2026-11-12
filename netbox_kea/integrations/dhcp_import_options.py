@@ -131,6 +131,8 @@ class _OptionDefinitionAdapter(RowAdapter):
     definitions: CustomDefinitions
     parent: Any
 
+    planned = None
+
     def _same_key(self):
         return plugin_model("OptionDefinition").objects.filter(standard=False, space=self.key.space, code=self.key.code)
 
@@ -346,6 +348,8 @@ class _OptionAdapter(RowAdapter):
     item: _PlannedOption
     parent_obj: Any
     content_type: Any
+
+    planned = None
 
     def blocked(self) -> NotWritten | None:
         """Return why the plugin refuses the data of the Option, which it still pairs (gap 17)."""
