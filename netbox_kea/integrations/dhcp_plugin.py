@@ -188,7 +188,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     Idempotent: re-running finds each row through its ``KeaDhcpLink`` mapping and updates it rather than
     duplicating it.
     """
-    from ..ipam_sources import POOL, RESERVATION, SUBNET
+    from ..ipam_sources import POOL, SUBNET
 
     summary = ImportSummary()
     scope = WriteScope(server, plan.family, summary, capabilities)
@@ -216,9 +216,9 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     networks = import_shared_networks(scope, dhcp_server, plan, references)
 
     prefix_claims, pool_claims, pd_pool_claims = claim_config_networks(server, plan)
-    summary.owner_disagreements += sum(
-        result.outcome == "disagreement" for result in (*prefix_claims.prefixes.values(), *pool_claims.ranges.values())
-    )
+    # A delegated-prefix Pool Prefix is claimed again after the stale objects go; that reconcile speaks for its source.
+    summary.ownership.claimed(SUBNET, prefix_claims.prefixes, complete=plan.configuration_complete)
+    summary.ownership.claimed(POOL, pool_claims.ranges, complete=plan.configuration_complete)
     subnet_ids = settle_subnet_ids(server, dhcp_server, plan, capabilities, summary)
     for planned_subnet in plan.subnets:
         name = planned_subnet.intent.shared_network
@@ -235,17 +235,6 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         upsert_options(scope, subnet_obj, planned_options(planned_subnet, plan.family, declared), references)
         upsert_pools(scope, subnet_obj, planned_subnet, references, pool_claims)
         upsert_pd_pools(scope, subnet_obj, planned_subnet, references, pd_pool_claims)
-    for source, outcomes in ((SUBNET, prefix_claims.prefixes), (POOL, pool_claims.ranges)):
-        if any(result.outcome == "error" for result in outcomes.values()):
-            summary.ownership.incomplete.add(source)
-        else:
-            summary.ownership.completed_sources.add(source)
-        summary.ownership.conflicts.update(
-            address for address, result in outcomes.items() if result.outcome == "conflict"
-        )
-        summary.ownership.disagreements.update(
-            address for address, result in outcomes.items() if result.outcome == "disagreement"
-        )
     delegated_step = import_reservation_snapshot(
         scope, dhcp_server, plan.reservations, references, adoption_servers=adopting, subnet_ids=subnet_ids
     )
@@ -256,15 +245,6 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         reconcile_delegated_prefixes(server, plan.family, delegated_step, unobserved, summary)
     if plan.family == 6:
         reconcile_pd_pool_prefixes(server, plan, observed, unobserved, summary)
-    if not plan.configuration_complete:
-        summary.ownership.incomplete.update({SUBNET, POOL})
-    if (
-        summary.errors
-        or summary.reservations_skipped
-        or summary.reservations_quarantined
-        or summary.reservations_unread
-    ):
-        summary.ownership.incomplete.add(RESERVATION)
     return summary
 
 

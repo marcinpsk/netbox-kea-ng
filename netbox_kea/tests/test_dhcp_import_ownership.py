@@ -326,6 +326,68 @@ class ImportOwnershipTest(TestCase):
         self.assertIsNone(self.server.ipam_first_complete_at)
         self.assertEqual(self.server.ipam_initial_observations, {})
 
+    def _import_with_one_unsupported_reservation(self, **unsupported):
+        """Import a healthy Reservation and one whose DUID the DHCP plugin cannot hold (130 octets, 389 characters)."""
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        too_long = ":".join(["0a"] * 130)
+        hosts = [
+            {**self.identity, "ip-addresses": ["2001:db8:1::10"]},
+            {**self.identity, "duid": too_long, "ip-addresses": ["2001:db8:1::11"], **unsupported},
+        ]
+        with stub_kea(_sync_responses({6: self.config}, {6: hosts})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        summary = results[0][1]
+        self.assertEqual((summary.reservations_created, summary.errors), (1, 0), summary.warnings)
+        self.assertEqual(summary.count(Kind.RESERVATION, Reason.PLUGIN_GAP), 1)
+        self.server.refresh_from_db()
+        return summary
+
+    def test_a_reservation_the_import_cannot_write_still_completes_the_reservation_source(self):
+        summary = self._import_with_one_unsupported_reservation()
+        # Its address is claimed before any DHCP row is written, so the observation of the source is complete.
+        self.assertTrue(IPAddress.objects.filter(address="2001:db8:1::11/64").exists())
+        self.assertTrue(summary.ownership.complete)
+        self.assertIn("import", self.server.ipam_initial_observations)
+
+    def test_a_reservation_the_import_cannot_write_keeps_its_delegated_prefixes_incomplete(self):
+        summary = self._import_with_one_unsupported_reservation(prefixes=[self.network])
+        self.assertIn("reservation", summary.ownership.completed_sources)
+        self.assertIn("reservation-prefix", summary.ownership.incomplete)
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
+    def test_a_failed_dhcp_write_blocks_the_import_receipt(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 1", self.identity["duid"])
+        with stub_kea(_sync_responses({6: self.config}, {6: [{**self.identity, "ip-addresses": ["2001:db8:1::10"]}]})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        summary = results[0][1]
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertIn("reservation", summary.ownership.completed_sources)
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
+    def test_a_failed_option_write_still_records_the_import_receipt(self):
+        from django.contrib.contenttypes.models import ContentType
+        from extras.models import CustomField
+
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        # A required custom field without a value: Option.clean() refuses every Option, which changes no IPAM object.
+        required = CustomField.objects.create(name="kea_required_note", type="text", required=True)
+        required.object_types.set([ContentType.objects.get_for_model(apps.get_model("netbox_dhcp", "Option"))])
+        config = {"subnet6": [{**self.config["subnet6"][0], "option-data": [{"code": 23, "data": "2001:db8::53"}]}]}
+        with stub_kea(_sync_responses({6: config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        summary = results[0][1]
+        self.assertEqual(summary.count(Kind.OPTION, Reason.WRITE_FAILED), 1, summary.warnings)
+        self.server.refresh_from_db()
+        self.assertIn("import", self.server.ipam_initial_observations)
+
     def test_import_only_owner_protects_addresses_prefixes_and_ranges(self):
         from netbox_kea.jobs import KeaIpamSyncJob
         from netbox_kea.tests.test_jobs import _lease_page, _make_job
@@ -587,19 +649,32 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
         self.assertEqual(self.delegated().status, "active")
 
-    def test_skipped_reservation_preserves_stale_delegated_link(self):
-        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
-        before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
+    def _import_one_skipped_reservation(self, **skipped) -> ImportSummary:
+        """Import the Reservation into Subnet 9, which this run did not write, so the Reservation is skipped."""
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
-        observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
+        observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9, **skipped}])
         summary = ImportSummary()
         references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
         scope = WriteScope(self.server, 6, summary, probe())
         step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
+        assert step is not None
         reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
+        return summary
+
+    def test_a_skipped_reservation_that_reports_its_prefix_preserves_the_stale_delegated_link(self):
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
+        summary = self._import_one_skipped_reservation(prefixes=[self.network])
         self.assertIn("reservation-prefix", summary.ownership.incomplete)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
+
+    def test_a_skipped_reservation_without_delegated_prefixes_completes_the_delegated_prefix_source(self):
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        summary = self._import_one_skipped_reservation()
+        # Kea reports the prefix nowhere now, so the complete phase drops its link; the old DHCP row keeps the Prefix.
+        self.assertIn("reservation-prefix", summary.ownership.completed_sources)
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=self.delegated()).exists())
 
     def test_foreign_dhcp_reference_prevents_delegated_deprecation(self):
         self.server.sync_deprecate_prefixes_and_ranges = True
@@ -788,6 +863,24 @@ class ImportOwnershipTest(TestCase):
                 self.assertEqual(summary.errors, 1, summary.warnings)
                 self.assertIn("reservation-prefix", summary.ownership.incomplete)
                 self.assertFalse(HostReservation.objects.get().ipv6_prefixes.filter(prefix=self.network).exists())
+
+    def test_a_delegated_prefix_disagreement_counts_once_although_the_import_claims_the_prefix_twice(self):
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        other = _make_db_server(name="disagreeing-owner", dhcp4=False, dhcp6=True)
+        # A Prefix's CIDR fixes its mask, so seed inconsistent owner facts to make both claims disagree.
+        IPAMOwnershipLink.objects.create(
+            server=other,
+            family=6,
+            source="reservation-prefix",
+            prefix=self.delegated(),
+            facts={"prefix_length": 48},
+            confirmation=next_confirmation_number(),
+        )
+
+        summary = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+
+        self.assertEqual((summary.owner_disagreements, summary.errors), (1, 0), summary.warnings)
+        self.assertIn("1 IPAM owner disagreement(s)", " ".join(_summary_problems(summary)))
 
     def test_failed_excluded_claim_preserves_both_prefix_attachments(self):
         excluded = "2001:db8:100:ff::/64"

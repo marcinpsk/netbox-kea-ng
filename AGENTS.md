@@ -37,6 +37,7 @@ uv run --group docs zensical build --strict  # documentation site: mkdocs.yml, p
 uv run --system-certs pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
+uv run python scripts/opengrep_readme.py   # write the .opengrep/README.md rules table from the ruleset
 uv run mypy                                # type check, any error fails (pre-push + CI)
 ```
 

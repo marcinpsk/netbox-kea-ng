@@ -53,8 +53,8 @@ class RuntimeChangeOutcome:
 
 
 @dataclass(frozen=True)
-class LeaseDeleteOutcome(RuntimeChangeOutcome):
-    """The outcome of a Lease delete, with the Lease that the fresh read before the delete observed."""
+class LeaseChangeOutcome(RuntimeChangeOutcome):
+    """The outcome of a Lease edit or delete, with the Lease that the fresh read before the change observed."""
 
     lease: Lease = field(kw_only=True)
 
@@ -66,7 +66,7 @@ def add_lease(server: Server, family: Family, request: LeaseRequest) -> RuntimeC
         return _outcome(client, family, lambda: client.lease_add(request))
 
 
-def edit_lease(server: Server, family: Family, shown: ShownLease, edit: LeaseEdit) -> RuntimeChangeOutcome:
+def edit_lease(server: Server, family: Family, shown: ShownLease, edit: LeaseEdit) -> LeaseChangeOutcome:
     """Write the fields of *edit* to the Lease *shown*, only while a fresh read agrees with the shown facts.
 
     The update sends the fresh Kea body with only the written fields changed. A Lease that is gone is never created
@@ -94,10 +94,11 @@ def edit_lease(server: Server, family: Family, shown: ShownLease, edit: LeaseEdi
                     ("Kea reports that it was deleted or changed after the check. Reload the form and try again.",),
                 )
 
-        return _outcome(client, family, send)
+        outcome = _outcome(client, family, send)
+        return LeaseChangeOutcome(outcome.application, outcome.diagnostics, lease=fresh.lease)
 
 
-def delete_lease(server: Server, family: Family, shown: ShownLease) -> LeaseDeleteOutcome:
+def delete_lease(server: Server, family: Family, shown: ShownLease) -> LeaseChangeOutcome:
     """Delete the Lease *shown*, only while a fresh read agrees with its kind, Subnet and client binding.
 
     Raises:
@@ -113,7 +114,7 @@ def delete_lease(server: Server, family: Family, shown: ShownLease) -> LeaseDele
                 raise ChangeRejected("target-changed", ("Kea reports that it no longer holds it.",))
 
         outcome = _outcome(client, family, send)
-        return LeaseDeleteOutcome(outcome.application, outcome.diagnostics, lease=fresh.lease)
+        return LeaseChangeOutcome(outcome.application, outcome.diagnostics, lease=fresh.lease)
 
 
 def wipe_leases(server: Server, family: Family, subnet_id: int) -> RuntimeChangeOutcome:

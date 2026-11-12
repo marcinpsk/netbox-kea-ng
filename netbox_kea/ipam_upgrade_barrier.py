@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from django.utils import timezone
 
@@ -22,9 +22,6 @@ from .ipam_marker import marked_description_q, parse_marker
 from .ipam_sources import OWNED_KINDS, SOURCES, ObjectField, Workflow
 from .models import DhcpIntegrationConfig, IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig
 from .sync_plan import SourceScope, served_families, sync_plan
-
-if TYPE_CHECKING:
-    from .ipam_reconciliation import SyncReport
 
 
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
@@ -83,20 +80,20 @@ def _receipts(server: Server) -> dict[Workflow, _ObservationReceipt]:
     return {cast("Workflow", key): _ObservationReceipt.read(receipt) for key, receipt in value.items()}
 
 
-def complete_job_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish only a whole job whose actual successful phase coverage satisfies current configuration."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
-        return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "job", scope)
+@dataclass(frozen=True)
+class ObservationCoverage:
+    """What one workflow run observed in one family: whether the run was complete, and the sources it completed."""
+
+    complete: bool
+    sources: frozenset[str]
 
 
-def complete_import_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish a whole import after successful ownership work and committed delegated attachments."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
+def complete_observation(server: Server, workflow: Workflow, coverage: Mapping[Family, ObservationCoverage]) -> None:
+    """Publish only a whole run whose every family is complete and whose sources satisfy the current configuration."""
+    if not coverage or any(not observed.complete for observed in coverage.values()):
         return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "import", scope)
+    scope = frozenset((family, source) for family, observed in coverage.items() for source in observed.sources)
+    _complete_observation(server, workflow, scope)
 
 
 def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:

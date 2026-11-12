@@ -63,7 +63,7 @@ from .dhcp_plugin_capabilities import PluginCapabilities, plugin_model
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ..ipam_reconciliation import ClaimResult, RangeClaim, SyncReport
+    from ..ipam_reconciliation import ClaimResult, RangeClaim
     from .dhcp_import_plan import (
         FamilyPlan,
         KindObservation,
@@ -890,12 +890,5 @@ def reconcile_pd_pool_prefixes(
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 
     complete = observed[Kind.PD_POOL].complete and Kind.PD_POOL not in unobserved
-    report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.cutoff, complete)])
-    record_report(summary, report)
-
-
-def record_report(summary: ImportSummary, report: SyncReport) -> None:
-    """Add the ownership work, the errors and the owner disagreements of one ``reconcile`` call to *summary*."""
-    summary.ownership.merge(report)
-    summary.ownership_errors += report.errors + report.prefix_errors
-    summary.owner_disagreements += len(report.disagreements)
+    phase = PDPoolPhase(pd_pool_prefixes(plan), plan.cutoff, complete)
+    summary.ownership.reconciled(phase.source, reconcile(server, plan.family, [phase]))

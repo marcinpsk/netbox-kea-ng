@@ -23,7 +23,14 @@ from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import forms, runtime_change, subnet_catalogue, tables
-from ..after_apply import LEASE_SIGNAL_NAMES, LeaseAdded, LeaseAfterApplyFacts, LeasesDeleted, lease_after_apply
+from ..after_apply import (
+    LEASE_SIGNAL_NAMES,
+    LeaseAdded,
+    LeaseAfterApplyFacts,
+    LeasesDeleted,
+    LeaseUpdated,
+    lease_after_apply,
+)
 from ..constants import Family
 from ..ipam_ownership import Ownership, address_ownership, prefix_ownership
 from ..ipam_reconciliation import claim_permissions
@@ -770,12 +777,15 @@ class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
         if not edit.written:
             messages.info(request, f"Lease {label} was not changed: the form holds the shown values.")
             return redirect(self._leases_url(server))
-        _run_change(
+        outcome = _run_change(
             request,
             f"Lease {label} updated.",
             lambda: runtime_change.edit_lease(server, self.dhcp_version, shown, edit),
             subject=f"Lease {label}",
         )
+        if outcome is not None and outcome.application == "applied":
+            facts = lease_after_apply(server, request.user, LeaseUpdated(outcome.lease, edit), request=request)
+            show_lease_side_effects(request, facts, subject=f"Lease {label}")
         return redirect(self._leases_url(server))
 
 
