@@ -47,9 +47,9 @@ Four views follow the rule through the same refusal function, `server_access()`,
 - NetBox's Server edit and delete views, with the change and the delete action, on a route with a `pk`. Their add
   form and the bulk views keep NetBox's check.
 
-Run Now and the Sync toggle need only the change permission on the Server. A user with that permission can switch
-the IPAM sync of the Server on, and the scheduled run then makes the same IPAM writes, so an IPAM grant adds no
-protection. A Manual Sync keeps the rule of unconstrained IPAM grants (`sync_permissions.py`), because it writes
+Run Now and the Sync toggle need only the view and change permissions on the Server. A user with these permissions
+can switch the IPAM sync of the Server on, and the scheduled run then makes the same IPAM writes, so an IPAM grant
+adds no protection. A Manual Sync keeps the rule of unconstrained IPAM grants (`sync_permissions.py`), because it writes
 a record that the operator selects, at once.
 
 ## Consequences
