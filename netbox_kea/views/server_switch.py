@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate navigation state before opening the same section on another Server."""
 
+from typing import Any
+
 from django.contrib import messages
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, QueryDict
+from django.http.response import HttpResponseBase
 from django.shortcuts import get_object_or_404, redirect
 from django.views import View
 
@@ -57,10 +60,14 @@ class ServerSwitchView(ConditionalLoginRequiredMixin, View):
     The switch leaves its Server, so it takes the refusal rule of the gate without the disabled-family state.
     """
 
+    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponseBase:
+        """Apply the refusal rule before Django picks the handler of the method."""
+        if isinstance(refusal := server_access(request, kwargs["pk"], "view"), HttpResponse):
+            return refusal
+        return super().dispatch(request, *args, **kwargs)
+
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Keep compatible search filters and reset all Server pagination."""
-        if isinstance(refusal := server_access(request, pk, "view"), HttpResponse):
-            return refusal
         targets = request.GET.getlist("target")
         try:
             target_pk = parse_decimal(targets[0]) if len(targets) == 1 else 0

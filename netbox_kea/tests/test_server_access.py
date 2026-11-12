@@ -376,6 +376,16 @@ class SwitchFromDisabledFamilyTest(TestCase):
         )
         self.assertEqual(kea.commands(), [])
 
+    def test_every_method_on_a_server_that_the_user_may_not_view_is_404(self):
+        hidden = _make_db_server(name="hidden")
+        user = User.objects.create_user("no-view")
+        self.client.force_login(user)
+        url = reverse("plugins:netbox_kea:server_switch", args=[hidden.pk])
+
+        for method in ("get", "head", "options", "post"):
+            with self.subTest(method=method):
+                self.assertEqual(getattr(self.client, method)(url).status_code, 404)
+
 
 class LinksNeedViewAndChangeTest(TestCase):
     """A Create Reservation link names only a Server that the user may view and change, as the gate needs."""
