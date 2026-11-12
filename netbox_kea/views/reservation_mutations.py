@@ -34,10 +34,10 @@ from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, Verified
 from ..sync_permissions import sync_gate
 from ..sync_plan import periodic_sync_enabled
 from ._base import (
-    _client_settings_refusal,
-    _run_change,
-    _safe_return_url,
-    _show_journal_and_signal,
+    client_settings_refusal,
+    run_change,
+    safe_return_url,
+    show_journal_and_signal,
 )
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
@@ -133,7 +133,7 @@ def reservation_identity_label(identity: ReservationIdentity) -> str:
     return f"{identity.identifier_type} {identity.value}"
 
 
-def _exact_reservation(
+def exact_reservation(
     server: Server,
     version: Family,
     subnet: VerifiedSubnet | None,
@@ -166,7 +166,7 @@ def live_reservation_target(
             subnet = scope.find_by_id(subnet_id)
         except CatalogueUnavailable:
             return failed_load(catalogue)
-    return _exact_reservation(server, version, subnet, catalogue, identity), catalogue
+    return exact_reservation(server, version, subnet, catalogue, identity), catalogue
 
 
 def _read_reservation_target(
@@ -184,7 +184,7 @@ def _read_reservation_target(
         subnet = observation.find_by_id(subnet_id)
     except CatalogueUnavailable:
         return failed_load(observation.snapshot)
-    return _exact_reservation(server, version, subnet, observation.snapshot, identity)
+    return exact_reservation(server, version, subnet, observation.snapshot, identity)
 
 
 def _target_or_redirect(
@@ -210,7 +210,7 @@ def show_reservation_side_effects(
     request: HttpRequest, facts: reservation_edit.AfterApplyFacts, *, show_claim: bool = True
 ) -> None:
     """Present the independent journal, signal and IPAM claim facts of an applied Reservation change."""
-    _show_journal_and_signal(
+    show_journal_and_signal(
         request, facts.journal, facts.signal, noun="Reservation", signal_name=f"reservation_{facts.action}"
     )
     if show_claim and not isinstance(facts.claim, str):
@@ -298,7 +298,7 @@ class _ReservationMutationView(FamilyRouteMixin, ServerAccessMixin, generic.Obje
 
     def _return_url(self, server: Server) -> str:
         """Return the Reservation search that linked here, else the Reservation list."""
-        return _safe_return_url(
+        return safe_return_url(
             self.request,
             reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": server.pk, "family": self.dhcp_version}),
         )
@@ -315,7 +315,7 @@ class _ReservationMutationView(FamilyRouteMixin, ServerAccessMixin, generic.Obje
 
     def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
         """Return the live confirmed mutation capabilities, or the response that refuses the mutation."""
-        if refusal := _client_settings_refusal(server, self.dhcp_version):
+        if refusal := client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
         capabilities = server_configuration.live_capabilities(server, self.dhcp_version)
@@ -379,7 +379,7 @@ class ServerReservationAddView(_ReservationMutationView):
         """Render the empty Reservation form."""
         server = self.server
         capabilities = None
-        if refusal := _client_settings_refusal(server, self.dhcp_version):
+        if refusal := client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
         else:
             capabilities = server_configuration.display_capabilities(server, self.dhcp_version)
@@ -415,7 +415,7 @@ class ServerReservationAddView(_ReservationMutationView):
             try:
                 identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
                 values = _submitted_values(self.dhcp_version, cleaned_data, options_formset)
-                outcome = _run_change(
+                outcome = run_change(
                     request,
                     "Reservation created.",
                     lambda: reservation_edit.save_add(
@@ -478,7 +478,7 @@ class ServerReservationEditView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the edit form with the live Reservation facts."""
         server = self.server
-        if refusal := _client_settings_refusal(server, self.dhcp_version):
+        if refusal := client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = reservation_identity_from_request(request, self.dhcp_version)
@@ -537,7 +537,7 @@ class ServerReservationEditView(_ReservationMutationView):
             cleaned_data = form.cleaned_data
             try:
                 values = _submitted_values(self.dhcp_version, cleaned_data, options_formset)
-                outcome = _run_change(
+                outcome = run_change(
                     request,
                     "Reservation updated.",
                     lambda: reservation_edit.save_edit(
@@ -596,7 +596,7 @@ class ServerReservationDeleteView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the confirmation page of the Reservation delete."""
         server = self.server
-        if refusal := _client_settings_refusal(server, self.dhcp_version):
+        if refusal := client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = reservation_identity_from_request(request, self.dhcp_version)
@@ -626,7 +626,7 @@ class ServerReservationDeleteView(_ReservationMutationView):
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
-        outcome = _run_change(
+        outcome = run_change(
             request,
             "Reservation deleted.",
             lambda: config_write.delete_reservation(server, self.dhcp_version, subnet_id, identity),

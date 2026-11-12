@@ -52,7 +52,7 @@ from netbox_kea.leases import parse_lease_query
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
-from netbox_kea.views._base import ChangeLoop, _run_change_loop
+from netbox_kea.views._base import ChangeLoop, run_change_loop
 from netbox_kea.views.leases import fetch
 from netbox_kea.views.notices import HEADLINES, Notice, NoticeKind
 
@@ -2820,7 +2820,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         def receive(sender, creation, **kwargs):
             # The frame of the running change loop holds the ChangeLoop with the rows that it classified as applied.
             frame = sys._getframe()
-            while frame.f_code is not _run_change_loop.__code__:
+            while frame.f_code is not run_change_loop.__code__:
                 frame = frame.f_back
             (loop,) = [value for value in frame.f_locals.values() if isinstance(value, ChangeLoop)]
             classified.append(any(row[1] is creation for row, _outcome in loop.applied))

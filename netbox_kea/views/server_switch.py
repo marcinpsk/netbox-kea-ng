@@ -11,7 +11,7 @@ from .. import subnet_catalogue
 from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..models import Server
-from ._base import ConditionalLoginRequiredMixin, _safe_return_url
+from ._base import ConditionalLoginRequiredMixin, safe_return_url
 from .notices import notice, show_notices
 from .server_scope import ServerAccessMixin, permitted_servers
 from .workspace import (
@@ -82,4 +82,4 @@ class ServerSwitchView(ServerAccessMixin, ConditionalLoginRequiredMixin, View):
             else workspace_filters(request.GET, section)
         )
         url = with_query(section.server_url(target.pk, version), query)
-        return redirect(with_return_url(url, _safe_return_url(request, "")))
+        return redirect(with_return_url(url, safe_return_url(request, "")))

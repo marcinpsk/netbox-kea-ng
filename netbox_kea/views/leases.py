@@ -95,12 +95,12 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     NetBoxRequest,
-    _client_or_refusal,
-    _run_change,
-    _run_change_loop,
-    _safe_return_url,
-    _show_journal_and_signal,
-    _strip_empty_params,
+    client_or_refusal,
+    run_change,
+    run_change_loop,
+    safe_return_url,
+    show_journal_and_signal,
+    strip_empty_params,
     sync_title,
 )
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
@@ -146,7 +146,7 @@ def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool 
 
 def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> HttpResponse:
     """Replace automatic or unchanged searches; push user searches that change the URL."""
-    current = urlsplit(_strip_empty_params(request.headers.get("HX-Current-URL", "")))
+    current = urlsplit(strip_empty_params(request.headers.get("HX-Current-URL", "")))
     target = urlsplit(url)
     unchanged = current.path == target.path and parse_qs(current.query, keep_blank_values=True) == parse_qs(
         target.query, keep_blank_values=True
@@ -200,7 +200,7 @@ def show_lease_side_effects(request: HttpRequest, facts: LeaseAfterApplyFacts, *
 
     *subject*, such as "Lease 192.0.2.10", starts each Manual Sync line.
     """
-    _show_journal_and_signal(
+    show_journal_and_signal(
         request, facts.journal, facts.signal, noun="Lease", signal_name=LEASE_SIGNAL_NAMES[facts.action]
     )
     if facts.sync == "not-read-back":
@@ -252,7 +252,7 @@ def present(
     if visible_only:
         rows = [row.record for row in table.paginated_rows]
     can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server)
-    return_url = _strip_empty_params(request.get_full_path())
+    return_url = strip_empty_params(request.get_full_path())
     reservation_hook_unavailable = _enrich_leases_with_badges(
         rows,
         server,
@@ -270,7 +270,7 @@ def present(
 
 
 # One Leases tab for both families; ServerLeasesView owns it.
-_LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
 @register_model_view(Server, "leases_tab", path="leases4", kwargs={"family": 4})
@@ -282,7 +282,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
 
     template_name = "netbox_kea/server_dhcp_leases.html"
     queryset = Server.objects.all()
-    tab = _LEASES_TAB
+    tab = LEASES_TAB
 
     @property
     def table(self) -> type[tables.LeaseTable4] | type[tables.LeaseTable6]:
@@ -355,7 +355,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
 
         search = LeaseSearch(form.cleaned_data["query"])
         state_filter = search.query.state
-        with _client_or_refusal(instance, self.dhcp_version) as client:
+        with client_or_refusal(instance, self.dhcp_version) as client:
             if isinstance(client, str):
                 messages.error(request, client)
                 return redirect(request.path)
@@ -406,7 +406,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
 
         per_page = 1000
 
-        with _client_or_refusal(instance, self.dhcp_version) as client:
+        with client_or_refusal(instance, self.dhcp_version) as client:
             if isinstance(client, str):
                 messages.error(request, client)
                 return redirect(request.path)
@@ -460,7 +460,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
                 "lease_notice": lease_notice,
             },
         )
-        return _search_history(request, response, _strip_empty_params(request.get_full_path()))
+        return _search_history(request, response, strip_empty_params(request.get_full_path()))
 
     def _search_value_control(self, request: HttpRequest, server: Server) -> HttpResponse:
         """Render the Search value control of the Attribute that the user selected: a dropdown or a text input."""
@@ -582,7 +582,7 @@ class ServerLeasesDeleteView(FamilyRouteMixin, ServerAccessMixin, GetReturnURLMi
 
     server_action = "view"
     workspace_section = "leases"
-    tab = _LEASES_TAB
+    tab = LEASES_TAB
 
     @property
     def form(self) -> type[forms.BaseLeaseDeleteForm]:
@@ -611,7 +611,7 @@ class ServerLeasesDeleteView(FamilyRouteMixin, ServerAccessMixin, GetReturnURLMi
 
         form = self.form(request.POST)
 
-        return_url = _strip_empty_params(self.get_return_url(request, obj=instance))
+        return_url = strip_empty_params(self.get_return_url(request, obj=instance))
         if not form.is_valid():
             messages.warning(request, str(form.errors))
             return _after_lease_delete(request, return_url)
@@ -630,7 +630,7 @@ class ServerLeasesDeleteView(FamilyRouteMixin, ServerAccessMixin, GetReturnURLMi
                 },
             )
 
-        loop = _run_change_loop(selected, lambda shown: runtime_change.delete_lease(instance, self.dhcp_version, shown))
+        loop = run_change_loop(selected, lambda shown: runtime_change.delete_lease(instance, self.dhcp_version, shown))
         for shown, message in loop.rejected:
             message.show(request, f"Lease {shown.label}")
         deleted = [outcome.lease for _shown, outcome in loop.applied]
@@ -695,7 +695,7 @@ class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
     server_action = "change"
     workspace_section = "leases"
 
-    tab = _LEASES_TAB
+    tab = LEASES_TAB
 
     @property
     def form_class(self) -> type[forms._LeaseEditForm]:
@@ -704,7 +704,7 @@ class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
 
     def _leases_url(self, server: Server) -> str:
         """Return the lease search that linked here, else the lease list."""
-        return _safe_return_url(
+        return safe_return_url(
             self.request,
             reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": self.dhcp_version}),
         )
@@ -729,7 +729,7 @@ class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
         """Render the edit form pre-filled with the current lease values and the shown facts."""
         server = self.server
 
-        with _client_or_refusal(server, self.dhcp_version) as client:
+        with client_or_refusal(server, self.dhcp_version) as client:
             if isinstance(client, str):
                 messages.error(request, client)
                 return redirect(self._leases_url(server))
@@ -781,7 +781,7 @@ class ServerLeaseEditView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
         if not edit.written:
             messages.info(request, f"Lease {label} was not changed: the form holds the shown values.")
             return redirect(self._leases_url(server))
-        outcome = _run_change(
+        outcome = run_change(
             request,
             f"Lease {label} updated.",
             lambda: runtime_change.edit_lease(server, self.dhcp_version, shown, edit),
@@ -801,7 +801,7 @@ class ServerLeaseAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_lease_add.html"
-    tab = _LEASES_TAB
+    tab = LEASES_TAB
 
     @property
     def form_class(self) -> type[forms._LeaseAddForm]:
@@ -848,7 +848,7 @@ class ServerLeaseAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView
             return self._render(request, server, form)
         creation: LeaseRequest = form.cleaned_data["request"]
         address = str(creation.address)
-        outcome = _run_change(
+        outcome = run_change(
             request,
             f"Lease for {address} created.",
             lambda: runtime_change.add_lease(server, self.dhcp_version, creation),

@@ -10,7 +10,7 @@ from django.urls import reverse
 from netbox.views import generic
 from utilities.templatetags.tabs import model_view_tabs
 
-from ..views._base import _safe_return_url
+from ..views._base import safe_return_url
 from ..views.server_scope import request_access, selected_family
 from ..views.workspace import WORKSPACE_SECTIONS, server_context, with_return_url
 
@@ -20,13 +20,13 @@ register = template.Library()
 @register.simple_tag(takes_context=True)
 def workspace_url(context, url):
     """Retain the validated previous workspace on a local navigation control."""
-    return with_return_url(url, _safe_return_url(context["request"], ""))
+    return with_return_url(url, safe_return_url(context["request"], ""))
 
 
 @register.inclusion_tag("netbox_kea/inc/workspace_return_field.html", takes_context=True)
 def workspace_return_field(context):
     """Retain the validated previous workspace when a search form submits."""
-    return {"workspace_return_url": _safe_return_url(context["request"], "")}
+    return {"workspace_return_url": safe_return_url(context["request"], "")}
 
 
 @register.inclusion_tag("netbox_kea/inc/workspace_shell.html", takes_context=True)
@@ -45,7 +45,7 @@ def server_workspace(context, server, out_of_band=False):
 def _object_tabs(context, server, family) -> list[dict]:
     """Return the native tabs that follow the workspace sections, such as Journal, Changelog and Jobs."""
     workspace_tabs = {section.native_tab for section in WORKSPACE_SECTIONS.values() if section.native_tab}
-    return_url = _safe_return_url(context["request"], "")
+    return_url = safe_return_url(context["request"], "")
     tabs = []
     for tab in model_view_tabs(context, server)["tabs"]:
         if tab["name"] in workspace_tabs:
@@ -67,7 +67,7 @@ def server_control_urls(context, server):
         context["actions"] = request_access(request, server).permitted_actions(actions)
     family = selected_family(request, server)
     urls = [reverse(f"plugins:netbox_kea:server_{action}", args=[server.pk]) for action in ("edit", "delete")]
-    return [(url, with_return_url(f"{url}?family={family}", _safe_return_url(request, ""))) for url in urls]
+    return [(url, with_return_url(f"{url}?family={family}", safe_return_url(request, ""))) for url in urls]
 
 
 @register.simple_tag(takes_context=True)

@@ -281,12 +281,12 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: shared networks render under the shared 'Subnets' tab."""
-        from netbox_kea.views.subnets import _SUBNETS_TAB
+        from netbox_kea.views.subnets import SUBNETS_TAB
 
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V4}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], _SUBNETS_TAB)
+        self.assertIs(response.context["tab"], SUBNETS_TAB)
 
 
 class TestServerSharedNetworks6View(_ViewTestBase):
@@ -320,12 +320,12 @@ class TestServerSharedNetworks6View(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: shared networks render under the shared 'Subnets' tab."""
-        from netbox_kea.views.subnets import _SUBNETS_TAB
+        from netbox_kea.views.subnets import SUBNETS_TAB
 
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], _SUBNETS_TAB)
+        self.assertIs(response.context["tab"], SUBNETS_TAB)
 
 
 # ---------------------------------------------------------------------------

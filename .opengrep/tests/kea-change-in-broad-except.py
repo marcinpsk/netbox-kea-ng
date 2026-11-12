@@ -50,7 +50,7 @@ def bad_view_defers_the_change_to_another_helper(request, server):
 def bad_view_evaluates_the_change_before_the_mapper(request, server):
     try:
         # ruleid: kea-change-in-broad-except
-        return _run_change(request, "Deleted.", config_write.delete_shared_network(server, 4, "net"))
+        return run_change(request, "Deleted.", config_write.delete_shared_network(server, 4, "net"))
     except Exception:
         logger.exception("Could not delete the Shared Network")
 
@@ -58,7 +58,7 @@ def bad_view_evaluates_the_change_before_the_mapper(request, server):
 def ok_view_catches_around_the_mapper(request, server):
     try:
         # ok: kea-change-in-broad-except
-        return _run_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))
+        return run_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))
     except Exception:
         logger.exception("Could not build the redirect")
 
@@ -87,7 +87,7 @@ def bad_view_wipes_inside_a_broad_except(request, server):
 def ok_view_runs_a_runtime_change_through_the_mapper(request, server):
     try:
         # ok: kea-change-in-broad-except
-        return _run_change(request, "Wiped.", lambda: runtime_change.wipe_leases(server, 4, 10))
+        return run_change(request, "Wiped.", lambda: runtime_change.wipe_leases(server, 4, 10))
     except Exception:
         logger.exception("Could not build the redirect")
 
@@ -95,6 +95,6 @@ def ok_view_runs_a_runtime_change_through_the_mapper(request, server):
 def ok_view_runs_a_loop_through_the_mapper(request, server, selected):
     try:
         # ok: kea-change-in-broad-except
-        return _run_change_loop(selected, lambda shown: runtime_change.delete_lease(server, 4, shown))
+        return run_change_loop(selected, lambda shown: runtime_change.delete_lease(server, 4, shown))
     except Exception:
         logger.exception("Could not build the report")

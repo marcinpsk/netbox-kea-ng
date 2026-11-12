@@ -30,13 +30,13 @@ from ..utilities import OptionalViewTab
 from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
-    _run_change,
-    _safe_return_url,
     daemon_version,
+    run_change,
+    safe_return_url,
 )
 from .notices import notice, show_notices
 from .server_scope import ServerAccess, ServerAccessMixin, permitted_servers
-from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
+from .subnets import NO_SUBNET_CIDR, SUBNETS_TAB, displayed_subnet
 from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, subsection_nav
 
 # One Config tab for both sections and both families; ServerOptionDefView owns it.
@@ -62,7 +62,7 @@ def _run_option_change(
     try:
         rows = forms.option_rows(formset)
         edit = option_row_edit(rows, posted_snapshot(rows))
-        _run_change(request, confirmed, lambda: change(edit))
+        run_change(request, confirmed, lambda: change(edit))
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         formset._non_form_errors = formset.error_class([exc.message])
         return False
@@ -75,7 +75,7 @@ class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, Condition
     server_action = "change"
     workspace_section = "subnets"
 
-    tab = _SUBNETS_TAB
+    tab = SUBNETS_TAB
 
     def _get_subnet_from_config(
         self, request: HttpRequest, server: Server, subnet_id: int
@@ -91,10 +91,10 @@ class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, Condition
     def get(self, request, pk: int, subnet_id: int):
         """Render the DHCP Option form of the Subnet."""
         server = self.server
-        return_url = _safe_return_url(
+        return_url = safe_return_url(
             request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
-        catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        catalogue, verified = displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if verified is None:
             reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
             messages.error(
@@ -141,13 +141,13 @@ class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, Condition
     def post(self, request, pk: int, subnet_id: int):
         """Write the DHCP Options of the Subnet."""
         server = self.server
-        return_url = _safe_return_url(
+        return_url = safe_return_url(
             request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
         formset = forms.DHCPOptionRowFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
-            messages.error(request, _NO_SUBNET_CIDR)
+            messages.error(request, NO_SUBNET_CIDR)
             return redirect(return_url)
         cidr: str = form.cleaned_data["subnet_cidr"]
         if not formset.is_valid():
@@ -446,7 +446,7 @@ class ServerOptionDefAddView(FamilyRouteMixin, ServerAccessMixin, ConditionalLog
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        _run_change(
+        run_change(
             request,
             f"Option definition '{option_def['name']}' (code {option_def['code']}) added.",
             lambda: config_write.add_option_definition(server, self.dhcp_version, option_def),
@@ -488,7 +488,7 @@ class ServerOptionDefDeleteView(FamilyRouteMixin, ServerAccessMixin, Conditional
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = self.server
-        _run_change(
+        run_change(
             request,
             f"Option definition code={code} space={space} deleted.",
             lambda: config_write.delete_option_definition(server, self.dhcp_version, code, space),

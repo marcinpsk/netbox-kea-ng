@@ -40,7 +40,7 @@ def bad_view_names_the_rejection_in_a_tuple(request, server):
 
 def ok_view_runs_the_change_through_the_mapper(request, server):
     # ok: kea-change-rejection-caught-outside-mapper
-    return _run_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))
+    return run_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))
 
 
 def ok_view_catches_a_form_error(request, form):
@@ -53,7 +53,7 @@ def ok_view_catches_a_form_error(request, form):
 
 # The path exclude of kea-change-mapper-outside-base does not apply in `opengrep test`.
 # ruleid: kea-change-mapper-outside-base
-def _run_change_loop(rows, change):
+def run_change_loop(rows, change):
     loop = []
     for row in rows:
         try:

@@ -14,7 +14,7 @@ from django.urls import reverse
 from .. import constants, forms
 from ..constants import Family, validate_family
 from ..models import Server
-from ._base import _safe_return_url
+from ._base import safe_return_url
 from .server_scope import ServerAccess, permitted_servers, selected_family
 
 PAGINATION = "page"
@@ -239,7 +239,7 @@ def with_return_url(url: str, return_url: str) -> str:
 def server_family_url(request: HttpRequest, server: Server, name: str) -> str:
     """Retain the selected family when navigating to a native Server route."""
     url = reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server)}"
-    return with_return_url(url, _safe_return_url(request, ""))
+    return with_return_url(url, safe_return_url(request, ""))
 
 
 def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
@@ -249,7 +249,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     family = selected_family(request, server)
     section = view_section(view)
     scoped = scope_section(section)
-    return_url = _safe_return_url(request, "")
+    return_url = safe_return_url(request, "")
 
     def family_url(version: Family) -> str:
         url = with_return_url(section.server_url(server.pk, version), return_url)

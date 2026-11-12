@@ -53,7 +53,7 @@ class NetBoxRequest(HttpRequest):
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
-_POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
+POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
 _RECORDED_NOTHING = "NetBox recorded nothing for this change."
@@ -81,7 +81,7 @@ def sync_title(state: "OwnershipState", noun: str) -> str:
     return ""
 
 
-def _safe_return_url(request: HttpRequest, fallback: str) -> str:
+def safe_return_url(request: HttpRequest, fallback: str) -> str:
     """Return the request's ``return_url`` when it is a local absolute path, else *fallback*."""
     return_url = request.GET.get("return_url", "")
     # redirect() reverses a value without "/" as a view name, so only a path is safe.
@@ -103,7 +103,7 @@ def _safe_return_url(request: HttpRequest, fallback: str) -> str:
     return return_url
 
 
-def _strip_empty_params(path: str) -> str:
+def strip_empty_params(path: str) -> str:
     """Return *path* with blank query-string parameters removed.
 
     HTMX 2.x omits empty form values from the browser push URL while still
@@ -119,7 +119,7 @@ def _strip_empty_params(path: str) -> str:
 
 
 @contextmanager
-def _client_or_refusal(server: Server, version: Family) -> Iterator[KeaClient | str]:
+def client_or_refusal(server: Server, version: Family) -> Iterator[KeaClient | str]:
     """Give the Kea client of *server*, closed at the end of the block, or the message of its invalid settings.
 
     Building the client sends nothing.
@@ -135,16 +135,16 @@ def _client_or_refusal(server: Server, version: Family) -> Iterator[KeaClient | 
         yield client
 
 
-def _client_settings_refusal(server: Server, version: Family) -> str:
+def client_settings_refusal(server: Server, version: Family) -> str:
     """Return the client settings error of *server*, or an empty string when its Kea client can be built.
 
     It builds the client and closes it again, so it sends nothing.
     """
-    with _client_or_refusal(server, version) as client:
+    with client_or_refusal(server, version) as client:
         return client if isinstance(client, str) else ""
 
 
-def _run_change(
+def run_change(
     request: HttpRequest,
     confirmed: str | Callable[[OutcomeT], str],
     change: Callable[[], OutcomeT],
@@ -167,7 +167,7 @@ def _run_change(
         _unconfirmed_message(outcome).show(request, subject)
         return outcome
     text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
-    not_saved = _persistence_failure(outcome)
+    not_saved = persistence_failure(outcome)
     if not_saved is not None:
         messages.warning(request, f"{text} {not_saved}")
     elif applied_warning:
@@ -204,7 +204,7 @@ class ChangeLoop(Generic[RowT, OutcomeT]):
     not_sent: list[RowT] = field(default_factory=list)
 
 
-def _run_change_loop(
+def run_change_loop(
     rows: Sequence[RowT],
     change: Callable[[RowT], OutcomeT],
     *,
@@ -253,14 +253,14 @@ def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) ->
     return ChangeMessage(" ".join(parts), warning=True)
 
 
-def _persistence_failure(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str | None:
+def persistence_failure(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str | None:
     """Return the warning for an applied change that Kea did not save to disk, or None when nothing failed."""
     if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
         return " ".join((_NOT_SAVED, *outcome.diagnostics))
     return None
 
 
-def _show_journal_and_signal(
+def show_journal_and_signal(
     request: HttpRequest, journal: SideEffectStatus, signal: SideEffectStatus, *, noun: str, signal_name: str
 ) -> None:
     """Present the journal and signal facts of an applied change: *noun* names the signal, such as "Lease"."""

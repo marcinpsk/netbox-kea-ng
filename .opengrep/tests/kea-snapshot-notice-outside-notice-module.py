@@ -44,7 +44,7 @@ def good_view_reads_another_attribute(observed):
 
 
 # ruleid: kea-change-mapper-outside-base
-def _run_change(request, change):
+def run_change(request, change):
     try:
         outcome = change()
     except ChangeRejected as rejection:
@@ -64,7 +64,7 @@ def _unconfirmed_message(outcome):
     return " ".join(outcome.diagnostics)
 
 
-def _persistence_failure(outcome):
+def persistence_failure(outcome):
     # ok: kea-snapshot-notice-outside-notice-module
     return " ".join(outcome.diagnostics)
 

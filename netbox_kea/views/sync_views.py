@@ -53,12 +53,12 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     OutcomeT,
     RowT,
-    _client_or_refusal,
-    _client_settings_refusal,
-    _persistence_failure,
-    _run_change_loop,
+    client_or_refusal,
+    client_settings_refusal,
+    persistence_failure,
+    run_change_loop,
 )
-from .leases import _LEASES_TAB, lease_sync_gates, show_lease_side_effects
+from .leases import LEASES_TAB, lease_sync_gates, show_lease_side_effects
 from .manual_sync_presenter import manual_sync_lines
 from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
@@ -131,7 +131,7 @@ class ServerLeaseSyncView(FamilyRouteMixin, ServerAccessMixin, ConditionalLoginR
             return _row_error(request, gate.reason)
 
         server = self.server
-        with _client_or_refusal(server, self.dhcp_version) as client:
+        with client_or_refusal(server, self.dhcp_version) as client:
             if isinstance(client, str):
                 return _row_error(request, client)
             observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
@@ -165,7 +165,7 @@ class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, Conditional
             return _row_error(request, gate.reason)
         server = self.server
         identity = reservation_identity_from_request(request, self.dhcp_version)
-        if refusal := _client_settings_refusal(server, self.dhcp_version):
+        if refusal := client_settings_refusal(server, self.dhcp_version):
             return _row_error(request, refusal)
         try:
             loaded = load_target(
@@ -497,7 +497,7 @@ class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, Condi
             form.add_error("sync_to_netbox", exc.message)
             return self._render(request, instance, form, None)
 
-        if refusal := _client_settings_refusal(instance, self.dhcp_version):
+        if refusal := client_settings_refusal(instance, self.dhcp_version):
             form.add_error(None, refusal)
             return self._render(request, instance, form, None)
         diagnostics = self._validate(instance, parsed.proposals)
@@ -522,7 +522,7 @@ class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, Condi
             show_reservation_side_effects(request, facts, show_claim=False)
 
         entries = list(enumerate(parsed.proposals))
-        loop = _run_change_loop(entries, create, stop_on_rejection=True, after_applied=after_applied)
+        loop = run_change_loop(entries, create, stop_on_rejection=True, after_applied=after_applied)
         if any(outcome.persistence == "not-requested" for _entry, outcome in loop.applied):
             messages.info(
                 request, "Configuration persistence is disabled for this server, so Kea did not save the import."
@@ -545,7 +545,7 @@ class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, Condi
 def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.AfterApplyFacts) -> str:
     """Name persistence, verification, pool-check and Manual Sync problems for this created entry."""
     notes = [
-        _persistence_failure(outcome),
+        persistence_failure(outcome),
         RESERVATION_VERIFICATION_FAILED if outcome.verification == "failed" else None,
     ]
     notes.extend(
@@ -599,7 +599,7 @@ class ServerLeaseBulkImportView(FamilyRouteMixin, ServerAccessMixin, Conditional
                     "plugins:netbox_kea:server_leases", kwargs={"pk": instance.pk, "family": self.dhcp_version}
                 ),
                 "result": result,
-                "tab": _LEASES_TAB,
+                "tab": LEASES_TAB,
             },
         )
 
@@ -631,7 +631,7 @@ class ServerLeaseBulkImportView(FamilyRouteMixin, ServerAccessMixin, Conditional
             return self._render(request, instance, form, None)
 
         effects = LeaseImportAfterApply(instance, request.user, request)
-        loop = _run_change_loop(
+        loop = run_change_loop(
             rows,
             lambda row: runtime_change.add_lease(instance, self.dhcp_version, row[1]),
             after_applied=lambda row, _outcome: effects.row_applied(row[1]),

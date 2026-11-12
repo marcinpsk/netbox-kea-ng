@@ -1132,7 +1132,7 @@ def _validate_excluded_prefixes(reservation: Reservation) -> None:
         )
 
 
-def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
+def reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
     """Serialize managed Reservation facts for the private Kea adapter."""
     subnet_id = 0 if isinstance(reservation.scope, GlobalReservationScope) else reservation.scope.subnet.subnet_id
     raw: dict[str, Any] = {
@@ -1190,7 +1190,7 @@ def reservation_matches_intent(
 def reservation_fingerprint(reservation: Reservation) -> str:
     """Return a stable fingerprint of managed facts only."""
     encoded = json.dumps(
-        _reservation_to_raw(replace(reservation, options=(), user_context=None)), sort_keys=True, separators=(",", ":")
+        reservation_to_raw(replace(reservation, options=(), user_context=None)), sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1505,7 +1505,7 @@ def _boot_fields(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv4Add
     return next_server, texts[0], texts[1]
 
 
-def _exact_reservation(raw: Any, family: int, catalogue: CatalogueSnapshot) -> Reservation:
+def exact_reservation(raw: Any, family: int, catalogue: CatalogueSnapshot) -> Reservation:
     """Parse one exact Kea target or fail closed."""
     return _parse_reservation(raw, _family(family), catalogue)
 
@@ -1537,7 +1537,7 @@ def _parse_record_at(
         return reservation, None
 
 
-def _parse_reservation_page(
+def parse_reservation_page(
     hosts: Any,
     family: int,
     catalogue: CatalogueSnapshot,

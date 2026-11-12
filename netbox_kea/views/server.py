@@ -24,7 +24,7 @@ from ..server_connection import service_connections, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import LazyClient, _safe_return_url, daemon_status, daemon_version
+from ._base import LazyClient, daemon_status, daemon_version, safe_return_url
 from .notices import Notice, inline_notices, notice
 from .server_scope import ServerAccessMixin
 from .workspace import server_context, with_return_url
@@ -250,7 +250,7 @@ class ServerStatusView(ServerAccessMixin, generic.ObjectView):
         # Build the services list from the configured service URLs (config-driven),
         # not from live status data. This ensures enable/disable buttons always render
         # even when the status fetch fails.
-        return_url = _safe_return_url(request, "")
+        return_url = safe_return_url(request, "")
         services = [
             {
                 "name": name,

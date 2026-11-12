@@ -9,7 +9,7 @@ from netbox.views import generic
 
 from .. import forms, runtime_change
 from ..models import Server
-from ._base import _run_change
+from ._base import run_change
 from .server_scope import ServerAccessMixin
 from .workspace import FamilyRouteMixin, server_family_url
 
@@ -30,7 +30,7 @@ class ServerDHCPEnableView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         """Re-enable the service."""
         instance = self.server
-        _run_change(
+        run_change(
             request,
             f"DHCPv{self.dhcp_version} service re-enabled on {instance}.",
             lambda: runtime_change.enable_dhcp(instance, self.dhcp_version),
@@ -64,7 +64,7 @@ class ServerDHCPDisableView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectV
             )
         max_period = form.cleaned_data.get("max_period")
         period = f" for up to {max_period}s" if max_period else ""
-        _run_change(
+        run_change(
             request,
             f"DHCPv{self.dhcp_version} disabled on {instance}{period}.",
             lambda: runtime_change.disable_dhcp(instance, self.dhcp_version, max_period),

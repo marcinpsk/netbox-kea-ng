@@ -11,14 +11,14 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      A row's `return_url` is assigned from `_safe_return_url()` with an empty fallback. Give row action
+      A row's `return_url` is assigned from `safe_return_url()` with an empty fallback. Give row action
       return URLs the current request path as their fallback. An empty fallback loses the list query after a
       mutation or cancellation. Limit: the rule checks this direct assignment only; it does not follow aliases
       or intermediate values.
     paths:
       exclude:
         - "**/tests/**"
-    pattern: $ROW["return_url"] = _safe_return_url($REQUEST, "")
+    pattern: $ROW["return_url"] = safe_return_url($REQUEST, "")
 
   - id: kea-queryset-model-attribute-discriminator
     languages: [python]
@@ -112,7 +112,7 @@ rules:
       A Kea client holds a `requests.Session`, so it lives for one operation (#239). Build it as the item of a
       `with` (`with server.get_client(version=family) as client:`), or through a holder that closes it:
       `change_outcome.build_client()` in a `with`, `views/_base.LazyClient`,
-      `lease_reservation_reads.WorkerClients`, or the context managers `views/_base._client_or_refusal()` and
+      `lease_reservation_reads.WorkerClients`, or the context managers `views/_base.client_or_refusal()` and
       `subnet_catalogue._catalogue_client()`. A lambda that `attempt()` runs becomes a local function with the
       `with` block. A `build_client()` call (bare or as a module attribute) must also be the item of a `with`.
       Limits: the holders are exempt by name, and the rule does not check how a caller uses `LazyClient`,
@@ -144,7 +144,7 @@ rules:
               def _catalogue_client(...):
                 ...
           - pattern-not-inside: |
-              def _client_or_refusal(...):
+              def client_or_refusal(...):
                 ...
           - pattern-not-inside: |
               class LazyClient:
@@ -437,8 +437,8 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not catch `ChangeRejected` in a view. Run the change through `_run_change()`, or a loop of changes
-      through `_run_change_loop()`, in `views/_base.py`. They are the one place that turns a Configuration
+      Do not catch `ChangeRejected` in a view. Run the change through `run_change()`, or a loop of changes
+      through `run_change_loop()`, in `views/_base.py`. They are the one place that turns a Configuration
       Change or Runtime Change outcome or rejection into a message (ADR 0005, ADR 0011). A second handler
       gives the same rejection a different message. The rule exempts a function by these two names.
     metadata:
@@ -474,10 +474,10 @@ rules:
             - pattern: ChangeRejected
             - pattern: $MODULE.ChangeRejected
       - pattern-not-inside: |
-          def _run_change(...):
+          def run_change(...):
               ...
       - pattern-not-inside: |
-          def _run_change_loop(...):
+          def run_change_loop(...):
               ...
       - focus-metavariable: $EXC
 
@@ -485,7 +485,7 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Define `_run_change` and `_run_change_loop` only in `views/_base.py`. The rule
+      Define `run_change` and `run_change_loop` only in `views/_base.py`. The rule
       `kea-change-rejection-caught-outside-mapper` exempts a function by these names, so a second definition
       in another view would hide its catch of `ChangeRejected`.
     metadata:
@@ -501,10 +501,10 @@ rules:
         - "**/views/_base.py"
     pattern-either:
       - pattern: |
-          def _run_change(...):
+          def run_change(...):
               ...
       - pattern: |
-          def _run_change_loop(...):
+          def run_change_loop(...):
               ...
 
   - id: kea-change-in-broad-except
@@ -513,7 +513,7 @@ rules:
     message: >-
       Do not call a `config_write` or `runtime_change` operation inside a `try` whose `except` catches
       `Exception`, `BaseException`, or everything. That handler also catches `ChangeRejected` and hides it
-      from `_run_change()` in `views/_base.py`. Pass the call to `_run_change()` or `_run_change_loop()` as a
+      from `run_change()` in `views/_base.py`. Pass the call to `run_change()` or `run_change_loop()` as a
       lambda, and catch only the errors that you expect. A call passed as a lambda is exempt, because the
       mapper catches the rejection first.
     metadata:
@@ -558,8 +558,8 @@ rules:
           - pattern: config_write.$OP(...)
           - pattern: runtime_change.$OP(...)
       # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
-      - pattern-not-inside: "_run_change(..., lambda: ..., ...)"
-      - pattern-not-inside: "_run_change_loop(..., lambda $ROW: ..., ...)"
+      - pattern-not-inside: "run_change(..., lambda: ..., ...)"
+      - pattern-not-inside: "run_change_loop(..., lambda $ROW: ..., ...)"
 
   - id: subprocess-without-timeout
     languages: [python]
@@ -1097,8 +1097,8 @@ rules:
       to `notice()`, or run a raised Reservation or Lease read through `load_snapshot()`, in
       `views/notices.py`, and show the Notice through `show_notices()`, a template or `ServerNotices`. One
       function there codes the Presentation rule of ADR 0003 for every Snapshot; a view that picks a level by
-      hand codes the rule again, and the copies drift. Exempt: the change outcome in `_run_change()`,
-      `_rejection_message()`, `_unconfirmed_message()` and `_persistence_failure()`, the lease export refusal
+      hand codes the rule again, and the copies drift. Exempt: the change outcome in `run_change()`,
+      `_rejection_message()`, `_unconfirmed_message()` and `persistence_failure()`, the lease export refusal
       in `_incomplete_export_message()`, and a function that parses a Reservation Transfer Document. Limits:
       an alias (a messages constant imported by name, or the diagnostics of a variable passed to a helper
       outside `views/`) and templates are not seen. A `messages.error()` or `messages.warning()` call is not
@@ -1120,7 +1120,7 @@ rules:
           - pattern: messages.WARNING
       # A change outcome or rejection, not a Snapshot (ADR 0005, ADR 0011).
       - pattern-not-inside: |
-          def _run_change(...):
+          def run_change(...):
               ...
       - pattern-not-inside: |
           def _rejection_message(...):
@@ -1129,7 +1129,7 @@ rules:
           def _unconfirmed_message(...):
               ...
       - pattern-not-inside: |
-          def _persistence_failure(...):
+          def persistence_failure(...):
               ...
       # A complete export refuses an incomplete Lease Snapshot; the message names the excluded records.
       - pattern-not-inside: |
@@ -1396,97 +1396,74 @@ rules:
               metavariable: $NAME
               regex: ^_
 
-  - id: kea-private-reservation-read-import
+  - id: kea-private-name-import
     languages: [python]
     severity: ERROR
     message: >-
-      Do not use a private name (a name that starts with `_`) of `netbox_kea/views/reservations.py` or
-      `netbox_kea/reservation_reads.py` in another module, tests included. `reservation_reads` holds the
-      Reservation read (#236), and its public names are its interface. A private name can change without
-      notice, so a caller that uses it breaks. Use a public name, or make the name public in its module. The
-      rule sees a from-import of a private source name (absolute, or relative with one or two dots before
-      `views.reservations` or `reservation_reads`, in any layout, also with `as`; a private alias of a public
-      name is allowed) and an attribute of the module name or of an alias from `from ... import
-      reservation_reads as x` or `from ...views import reservations as x`. A `from .reservations import` in
-      `views/` is rule `kea-private-reservation-view-import`. Limits: `import ... as x` of the full module
-      path, `getattr()`, a `mock.patch()` target string and a re-export are not seen.
-    metadata:
-      category: maintainability
-      confidence: HIGH
-    pattern-either:
-      # A private source name imported from either module; the import pattern sees through aliases and comments.
-      - patterns:
-          - pattern-either:
-              - pattern: from netbox_kea.views.reservations import $NAME
-              - pattern: from netbox_kea.reservation_reads import $NAME
-              - pattern: from .views.reservations import $NAME
-              - pattern: from ..views.reservations import $NAME
-              - pattern: from .reservation_reads import $NAME
-              - pattern: from ..reservation_reads import $NAME
-          - metavariable-regex:
-              metavariable: $NAME
-              regex: ^_
-      - patterns:
-          - pattern-either:
-              - pattern: netbox_kea.views.reservations.$NAME
-              - pattern: netbox_kea.reservation_reads.$NAME
-              - pattern: reservation_reads.$NAME
-              - patterns:
-                  - pattern-either:
-                      - pattern-inside: |
-                          from netbox_kea import reservation_reads as $ALIAS
-                          ...
-                      - pattern-inside: |
-                          from . import reservation_reads as $ALIAS
-                          ...
-                      - pattern-inside: |
-                          from .. import reservation_reads as $ALIAS
-                          ...
-                      - pattern-inside: |
-                          from netbox_kea.views import reservations as $ALIAS
-                          ...
-                      - pattern-inside: |
-                          from .views import reservations as $ALIAS
-                          ...
-                      - pattern-inside: |
-                          from ..views import reservations as $ALIAS
-                          ...
-                  - pattern: $ALIAS.$NAME
-          - metavariable-regex:
-              metavariable: $NAME
-              regex: ^_
-
-  - id: kea-private-reservation-view-import
-    languages: [python]
-    severity: ERROR
-    message: >-
-      Do not import a private name (a name that starts with `_`) of `views/reservations.py` into another view
-      module with `from .reservations import` (in any layout; a private alias of a public name is allowed) or
-      `from . import reservations`. The reason is the same as for `kea-private-reservation-read-import`. Use a
-      public name, or make the name public in its module. The rule scans `views/` only, because outside it
-      `from .reservations` names the domain module `netbox_kea/reservations.py`. Limits: `getattr()` and a
-      re-export are not seen.
+      Do not import a private name (a name that starts with one `_`) from another `netbox_kea` module in
+      production code. A private name can change without notice, so a caller that uses it breaks. Make the name
+      public in its module. The rule sees `from netbox_kea... import _x` and a relative `from .x import _x`, also
+      inside parentheses and with `as`. Allowed: a dunder name such as `__version__`, and `from . import _x`,
+      which imports a private module of the same package. Limits: the tests, an attribute read of a private name
+      through a module, `getattr()` and a re-export are not seen. Ruff `PLC2701` does not replace the rule,
+      because it does not check imports inside the package.
     metadata:
       category: maintainability
       confidence: HIGH
     paths:
       include:
-        - "**/views/**"
-        - "kea-private-reservation-view-import.py"
+        - "netbox_kea/**"
+        - "kea-private-name-import.py"
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-either:
+          - pattern: from $MODULE import $NAME
+          - pattern: from $MODULE import $NAME as $ALIAS
+      - metavariable-regex:
+          metavariable: $MODULE
+          regex: ^(\.[.\w]*\w|netbox_kea(\.\w+)*)$
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: ^_(?!_)
+
+  - id: kea-server-permission-outside-server-scope
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read a Server permission only in `netbox_kea/views/server_scope.py` (ADR 0016). A Server view inherits
+      `ServerAccessMixin` and reads `self.server` and `self.access.can_change`; other code gets the permitted
+      Servers from `permitted_servers()`, and a combined page from `writable_servers()`. The rule sees
+      `Server.objects.restrict(...)` (also through a module), `get_object_or_404(Server...)` and
+      `has_perm("netbox_kea.<x>_server", ...)` in production code. Allowed: the custom
+      `has_perm("netbox_kea.bulk_delete_lease_from_server", obj=...)` check of a Lease delete. Limits: a queryset
+      of another name, `has_perms()`, a permission name built at run time and NetBox's generic views are not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-server-permission-outside-server-scope.py"
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+        - "netbox_kea/views/server_scope.py"
     pattern-either:
+      - pattern: Server.objects.restrict(...)
+      - pattern: $MODULE.Server.objects.restrict(...)
       - patterns:
-          - pattern: from .reservations import $NAME
+          - pattern: get_object_or_404($QUERYSET, ...)
           - metavariable-regex:
-              metavariable: $NAME
-              regex: ^_
+              metavariable: $QUERYSET
+              regex: ^(\w+\.)*Server\b
       - patterns:
-          - pattern-inside: |
-              from . import reservations as $ALIAS
-              ...
-          - pattern: $ALIAS.$NAME
+          - pattern: $USER.has_perm($PERMISSION, ...)
           - metavariable-regex:
-              metavariable: $NAME
-              regex: ^_
+              metavariable: $PERMISSION
+              regex: ^["']netbox_kea\.\w+_server["']$
+          - pattern-not: $USER.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=$OBJECT)
 
   - id: kea-ownership-read-without-database-error
     languages: [python]

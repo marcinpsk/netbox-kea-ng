@@ -126,7 +126,7 @@ def _catalogue_client(server, family):
 
 
 @contextmanager
-def _client_or_refusal(server, version):
+def client_or_refusal(server, version):
     # ok: kea-client-outside-with
     client = attempt("The client", lambda: server.get_client(version=version))
     with client:

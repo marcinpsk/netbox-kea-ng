@@ -43,9 +43,9 @@ from .leases import (
     LeaseRead,
     LeaseRequest,
     LeaseSnapshot,
-    _creation_arguments,
     allocation_identities,
     confirm_lease_creation,
+    creation_arguments,
     lookup_arguments,
     read_exact_lease,
     read_lease_change,
@@ -67,11 +67,11 @@ from .reservations import (
     ReservationIdentity,
     ReservationScope,
     ReservationSnapshot,
-    _exact_reservation,
-    _parse_reservation_page,
-    _reservation_to_raw,
     apply_reservation_change,
+    exact_reservation,
+    parse_reservation_page,
     reservation_identifier_types,
+    reservation_to_raw,
 )
 
 if TYPE_CHECKING:
@@ -300,7 +300,7 @@ class FreshReservation:
             options = merge_option_edit(change.options, raw_options, self.reservation.family, definitions)
         intended = apply_reservation_change(self.reservation, dataclasses.replace(change, options=None))
         intended = dataclasses.replace(intended, options=parse_dhcp_options(options))
-        serialized = _reservation_to_raw(intended)
+        serialized = reservation_to_raw(intended)
         if options or (not raw_options and "option-data" in self.raw):
             serialized["option-data"] = options
         merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}
@@ -1021,7 +1021,7 @@ class KeaClient:
                 next_cursor = _encode_reservation_cursor(next_source, next_from)
                 break
             seen_cursors.add(candidate)
-        return _parse_reservation_page(hosts, version, catalogue, next_cursor, read_started=started)
+        return parse_reservation_page(hosts, version, catalogue, next_cursor, read_started=started)
 
     def reservation_by_identity(
         self,
@@ -1057,7 +1057,7 @@ class KeaClient:
         raw = self._reservation_raw_by_identity(version, scope, identity)
         if raw is None:
             return None
-        reservation = _exact_reservation(raw, version, catalogue)
+        reservation = exact_reservation(raw, version, catalogue)
         if reservation.scope != scope or reservation.identity != identity:
             raise MalformedReservation(
                 "target-mismatch",
@@ -1138,7 +1138,7 @@ class KeaClient:
         raw = self._reservation_raw_by_address(version, scope, str(address))
         if raw is None:
             return None
-        reservation = _exact_reservation(raw, version, catalogue)
+        reservation = exact_reservation(raw, version, catalogue)
         held = reservation.delegated_prefixes if isinstance(target, ipaddress.IPv6Network) else reservation.addresses
         if reservation.scope != scope or target not in held:
             raise MalformedReservation(
@@ -1161,11 +1161,11 @@ class KeaClient:
         started = _now()
         reply = self._one_command(KeaCommand.RESERVATION_GET_BY_HOSTNAME, version, {"hostname": hostname}, (0, 3))
         if reply["result"] == 3:
-            return _parse_reservation_page([], version, catalogue, None, read_started=started)
+            return parse_reservation_page([], version, catalogue, None, read_started=started)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
             raise MalformedReply("reservation-get-by-hostname returned malformed arguments.")
-        return _parse_reservation_page(
+        return parse_reservation_page(
             arguments.get("hosts"),
             version,
             catalogue,
@@ -1260,7 +1260,7 @@ class KeaClient:
         """
         if isinstance(reservation.scope, GlobalReservationScope):
             raise ValueError("Creating Global Reservations is not supported.")
-        arguments = {"reservation": _reservation_to_raw(reservation)}
+        arguments = {"reservation": reservation_to_raw(reservation)}
         self._config_mutation_command(KeaCommand.RESERVATION_ADD, reservation.family, arguments)
 
     def reservation_update(self, family: Family, record: dict[str, Any]) -> None:
@@ -1448,7 +1448,7 @@ class KeaClient:
 
         """
         family = request.family
-        confirm_lease_creation([self._one_command(LEASE_ADD[family], family, _creation_arguments(request))])
+        confirm_lease_creation([self._one_command(LEASE_ADD[family], family, creation_arguments(request))])
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
