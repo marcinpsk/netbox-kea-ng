@@ -13,6 +13,60 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.14.0 (2026-11-12)
+
+### Bug Fixes
+
+- Allow an OpenGrep message code span that ends in a backslash
+  ([`22d57ff`](https://github.com/marcinpsk/netbox-kea-ng/commit/22d57ffbba4401c0f8e531ec550117553dd91f83))
+
+- Exit 0 after the OpenGrep README script writes the table
+  ([`a9ac404`](https://github.com/marcinpsk/netbox-kea-ng/commit/a9ac404a21cb0d290c3ae78f2f68f9a05580b404))
+
+- Leave Server persist_config out of GraphQL, as on the REST API
+  ([`6dbb19d`](https://github.com/marcinpsk/netbox-kea-ng/commit/6dbb19deb26c643409ede3f5a90530253e1e6357))
+
+- Read OpenGrep README code spans and markers as GitHub does
+  ([`9e75a21`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e75a214bbd3a32a553ba2d5d4824639a28e1a51))
+
+### Build System
+
+- Require netaddr 1.3.0 or later, with no upper bound
+  ([`9cefb1e`](https://github.com/marcinpsk/netbox-kea-ng/commit/9cefb1eeac93bb29f1a96633d4b6d17b0f38b21e))
+
+### Documentation
+
+- Say that a failed Option write leaves the import receipt
+  ([`034b2c6`](https://github.com/marcinpsk/netbox-kea-ng/commit/034b2c64f54d1ed6bd84316c29053fa93ef7aaaf))
+
+- Say that the Server API fields leave out persist_config
+  ([`279f0d4`](https://github.com/marcinpsk/netbox-kea-ng/commit/279f0d489037af87cb1ba91fb19f1419f0c7ec04))
+
+- Say when a skipped Reservation leaves the delegated-prefix source incomplete
+  ([`cf31df6`](https://github.com/marcinpsk/netbox-kea-ng/commit/cf31df6e53da160d6a8eddef4a7d22a0bfaa6593))
+
+- Write the OpenGrep README rules table from the ruleset
+  ([`c8e835a`](https://github.com/marcinpsk/netbox-kea-ng/commit/c8e835a01d78430c9f78c1fd4df401e1d27f5de3))
+
+### Features
+
+- Journal and signal a Lease edit, as a Lease add and delete do
+  ([`31a0d75`](https://github.com/marcinpsk/netbox-kea-ng/commit/31a0d7563205481abfe5b5d5b50defb9323038a1))
+
+### Refactoring
+
+- **dhcp-import**: One record of IPAM claim outcomes
+  ([`49bacf7`](https://github.com/marcinpsk/netbox-kea-ng/commit/49bacf71d0a1a1102f87e9fac06f625a8778d547))
+
+### Testing
+
+- Count a twice-claimed delegated Prefix disagreement once
+  ([`188c78d`](https://github.com/marcinpsk/netbox-kea-ng/commit/188c78d3edaf00707b7d2cd2a7139002d5a617d6))
+
+- Narrow the Reservation step of the skipped-Reservation helper for mypy
+  ([`4aa465e`](https://github.com/marcinpsk/netbox-kea-ng/commit/4aa465e58d636480a8563af90939a83ce74d39c4))
+
+
 ## v3.13.2 (2026-11-10)
 
 ### Chores
