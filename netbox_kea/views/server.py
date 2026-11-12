@@ -211,6 +211,7 @@ class ServerStatusRedirectView(ServerAccessMixin, generic.ObjectView):
     """Send the former Status entry point to the Server Overview."""
 
     server_action = "view"
+    family_scoped = False
     queryset = Server.objects.all()
 
     def get(self, request: HttpRequest, **kwargs):
@@ -223,6 +224,7 @@ class ServerStatusView(ServerAccessMixin, generic.ObjectView):
     """Server status tab: shows daemon uptime, versions and HA state."""
 
     server_action = "view"
+    family_scoped = False
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_status.html"
 

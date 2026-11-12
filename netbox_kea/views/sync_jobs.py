@@ -186,6 +186,7 @@ class ServerJobsView(ServerAccessMixin, View):
     """
 
     server_action = "view"
+    family_scoped = False
     tab = ViewTab(
         label="Jobs",
         badge=lambda obj: jobs_of(obj.pk).count(),

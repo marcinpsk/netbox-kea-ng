@@ -256,6 +256,7 @@ class ReservationCheckNetboxIPView(ServerAccessMixin, View):
     """
 
     server_action = "view"
+    family_scoped = False
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Read the IPAM Ownership of *ip* and return an advisory fragment (or empty body)."""

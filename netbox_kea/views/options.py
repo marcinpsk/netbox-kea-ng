@@ -322,6 +322,7 @@ class CombinedServerStatusBadgeView(ServerAccessMixin, View):
     """
 
     server_action = "view"
+    family_scoped = False
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Return status badge fragment for server *pk*."""

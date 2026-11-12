@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import requests
 from bs4 import BeautifulSoup
+from core.models import Job
 from django.conf import settings
 from django.db import connection
 from django.test import TestCase
@@ -56,6 +57,20 @@ class RunNowAndToggleRefusalTest(_AccessTestCase):
         response = self.client.post(url)
 
         self.assertContains(response, _CHANGE_REFUSED, status_code=403)
+        self.server.refresh_from_db()
+        self.assertTrue(self.server.sync_enabled)
+
+    def test_a_change_grant_without_view_is_404_and_changes_nothing(self):
+        user = User.objects.create_user("change-only")
+        _grant([Server], ["change"], user=user)
+        self.client.force_login(user)
+        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True) as job:
+            for name in ("server_sync_now", "server_sync_toggle"):
+                with self.subTest(route=name):
+                    response = self.client.post(reverse(_NAMESPACE + name, args=[self.server.pk]))
+                    self.assertEqual(response.status_code, 404)
+
+        job.enqueue.assert_not_called()
         self.server.refresh_from_db()
         self.assertTrue(self.server.sync_enabled)
 
@@ -230,8 +245,6 @@ _HANDLER_GATE = {
     # A gated change view is a change form to the branch controls, and these POST-only actions are not.
     "server_sync_now": "change",
     "server_sync_toggle": "change",
-    # The switch leaves its Server, so the disabled family of that Server does not apply.
-    "server_switch": "view",
     # NetBox's views, which also serve the add form and keep NetBox's check there.
     "server_edit": "change",
     "server_delete": "delete",
@@ -385,6 +398,40 @@ class SwitchFromDisabledFamilyTest(TestCase):
         for method in ("get", "head", "options", "post"):
             with self.subTest(method=method):
                 self.assertEqual(getattr(self.client, method)(url).status_code, 404)
+
+
+class PerServerViewFamilyTest(TestCase):
+    """A view of the whole Server keeps the refusal rule and ignores the family selection of the query."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="four-only", dhcp4=True, dhcp6=False)
+        self.user = User.objects.create_user("per-server")
+        _grant([Server], ["view"], user=self.user)
+        self.client.force_login(self.user)
+
+    def test_each_per_server_view_ignores_a_disabled_family(self):
+        _grant([Job], ["view"], user=self.user)
+        with stub_kea(_KEA_DOWN):
+            for name, query in (
+                ("server_jobs", {}),
+                ("server_status", {}),
+                ("server_status_data", {}),
+                ("server_dhcp_plugin", {}),
+                ("server_dhcp_plugin_drift", {}),
+                ("combined_server_status_badge", {}),
+                ("reservation_check_ip", {"ip": "192.0.2.10"}),
+            ):
+                with self.subTest(route=name):
+                    response = self.client.get(
+                        reverse(_NAMESPACE + name, args=[self.server.pk]), {**query, "family": "6"}
+                    )
+                    self.assertTemplateNotUsed(response, "netbox_kea/server_protocol_disabled.html")
+                    self.assertNotIn("HX-Refresh", response.headers)
+
+    def test_the_jobs_tab_refuses_a_user_without_the_job_permission_on_a_disabled_family(self):
+        response = self.client.get(reverse(_NAMESPACE + "server_jobs", args=[self.server.pk]), {"family": "6"})
+
+        self.assertEqual(response.status_code, 403)
 
 
 class LinksNeedViewAndChangeTest(TestCase):

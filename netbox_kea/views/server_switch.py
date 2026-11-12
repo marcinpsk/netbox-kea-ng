@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate navigation state before opening the same section on another Server."""
 
-from typing import Any
-
 from django.contrib import messages
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, QueryDict
-from django.http.response import HttpResponseBase
 from django.shortcuts import get_object_or_404, redirect
 from django.views import View
 
@@ -14,9 +11,9 @@ from .. import subnet_catalogue
 from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..models import Server
-from ._base import ConditionalLoginRequiredMixin, safe_return_url
+from ._base import safe_return_url
 from .notices import notice, show_notices
-from .server_scope import permitted_servers, server_access
+from .server_scope import ServerAccessMixin, permitted_servers
 from .workspace import (
     WORKSPACE_SECTIONS,
     WorkspaceSection,
@@ -54,17 +51,12 @@ def _checked_filters(request: HttpRequest, target: Server, section: WorkspaceSec
     return query
 
 
-class ServerSwitchView(ConditionalLoginRequiredMixin, View):
-    """Switch only between viewable Servers and canonical workspace sections.
+class ServerSwitchView(ServerAccessMixin, View):
+    """Switch only between viewable Servers and canonical workspace sections."""
 
-    The switch leaves its Server, so it takes the refusal rule of the gate without the disabled-family state.
-    """
-
-    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponseBase:
-        """Apply the refusal rule before Django picks the handler of the method."""
-        if isinstance(refusal := server_access(request, kwargs["pk"], "view"), HttpResponse):
-            return refusal
-        return super().dispatch(request, *args, **kwargs)
+    server_action = "view"
+    # The switch leaves its Server, so the disabled family of that Server does not apply.
+    family_scoped = False
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Keep compatible search filters and reset all Server pagination."""

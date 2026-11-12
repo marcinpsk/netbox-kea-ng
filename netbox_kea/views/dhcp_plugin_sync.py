@@ -368,6 +368,7 @@ class ServerDhcpPluginView(ServerAccessMixin, generic.ObjectView):
     """Sync subsection: the import, its latest run, and the drift card that htmx loads after the page."""
 
     server_action = "view"
+    family_scoped = False
     workspace_section = "sync"
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_dhcp_plugin.html"
@@ -404,6 +405,7 @@ class ServerDhcpPluginDriftView(ServerAccessMixin, generic.ObjectView):
     """
 
     server_action = "view"
+    family_scoped = False
     queryset = Server.objects.all()
     template_name = "netbox_kea/inc/dhcp_plugin_drift.html"
 
@@ -458,6 +460,7 @@ class ServerDhcpPluginSyncNowView(ServerAccessMixin, View):
     """POST-only: import this server's live Kea data-tier config into the DHCP plugin."""
 
     server_action = "view"
+    family_scoped = False
 
     def post(self, request, pk):
         """Run the import and report a per-version summary."""

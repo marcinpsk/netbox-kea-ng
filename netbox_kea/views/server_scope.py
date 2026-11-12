@@ -217,10 +217,11 @@ class ServerAccessMixin:
     """The gate of a Server view: it loads the Server of the route once, then refuses a disabled family.
 
     A view names the action of its handlers in ``server_action``. The handlers read ``self.server``, and
-    ``self.access.can_change`` when they offer changes.
+    ``self.access.can_change`` when they offer changes. A view of the whole Server sets ``family_scoped = False``.
     """
 
     server_action: ClassVar[ServerAction]
+    family_scoped: ClassVar[bool] = True
     workspace_section = "overview"
     server: Server
     access: ServerAccess
@@ -236,7 +237,7 @@ class ServerAccessMixin:
             return access
         self.access = cast(GatedRequest, request).server_access = access
         self.server = server = access.server
-        if not (server.dhcp4 if selected_family(request, server) == 4 else server.dhcp6):
+        if self.family_scoped and not (server.dhcp4 if selected_family(request, server) == 4 else server.dhcp6):
             if request.method not in SAFE_METHODS and (refusal := self.disabled_family_access(request, server)):
                 return refusal
             if request.headers.get("HX-Request") == "true":
