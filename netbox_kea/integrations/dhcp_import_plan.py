@@ -662,6 +662,23 @@ def _with_children(planned: PlannedObject) -> Iterator[PlannedObject]:
         yield from _with_children(child)
 
 
+def planned_subtree(
+    planned: PlannedObject, family: int, declared: Mapping[OptionDefinitionKey, OptionDefIntent]
+) -> Iterator[tuple[Kind, str, MappingKey | InvalidPoolKey | None]]:
+    """Yield the kind, the Kea path and the key of each object in the planned subtree of *planned*.
+
+    The DHCP Options of the object come first, then each child with its own subtree. An Option without a mapping
+    source has no key.
+    """
+    if planned.key.kind in _OPTION_OWNERS:
+        options = planned_options(planned, family, declared)
+        for key, path in zip(options.keys, options.paths(family), strict=True):
+            yield Kind.OPTION, path, key
+    for child in planned.children:
+        yield child.key.kind, child.key.path(family), child.key
+        yield from planned_subtree(child, family, declared)
+
+
 def _option_definitions(
     definitions: tuple[OptionDefIntent, ...], class_name: str | None = None
 ) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:

@@ -1558,21 +1558,27 @@ class ConcurrencyHarness(TransactionTestCase):
 
 
 def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
-    """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
+    """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction.
+
+    The steps take the hand-offs that the apply builds from the plan of an empty configuration. apply_plan itself
+    takes the mapping lock first, so a concurrent Server deletion would refuse the whole import.
+    """
     from netbox_kea import event_scope
-    from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-    from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
+    from netbox_kea.integrations.dhcp_import_plan import plan_family
     from netbox_kea.integrations.dhcp_import_reservations import (
         import_reservation_snapshot,
         reconcile_delegated_prefixes,
     )
-    from netbox_kea.integrations.dhcp_import_write import WriteScope
+    from netbox_kea.integrations.dhcp_import_write import WriteScope, WrittenStore
+    from netbox_kea.integrations.dhcp_plugin import _import_definitions_and_classes
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+    from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 
-    references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
-    scope = WriteScope(server, 6, summary, PluginCapabilities(frozenset()))
+    plan = plan_family(parse_dhcp_config({"subnet6": []}, 6), observation)
+    scope = WriteScope(server, 6, summary, PluginCapabilities(frozenset()), WrittenStore(plan))
     with event_scope.atomic():
-        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
+        references = _import_definitions_and_classes(scope, None, plan, ())
+        step = import_reservation_snapshot(scope, None, plan.reservations, references, adoption_servers=())
         assert step is not None
         reconcile_delegated_prefixes(server, 6, step, set(), summary)
 
