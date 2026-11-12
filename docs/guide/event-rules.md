@@ -8,9 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 
 NetBox queues an event for each change and sends the queue to event rules and webhooks when the request or
 job ends. The plugin writes each sync row, each DHCP-plugin import family and each import receipt in its own
-transaction. A sync row holds one IP address and the MAC addresses of its hardware addresses. On NetBox 4.6.9 and later, when such a transaction starts with no other transaction open in a request or in the
-IPAM sync job, NetBox dispatches its events right after its COMMIT, and none when it rolls back. A failed row or
-family then sends no event for the changes that it reverted. This has these consequences:
+transaction. A sync row holds one IP address and the MAC addresses of its hardware addresses. On NetBox 4.6.9 and
+later, when such a transaction starts with no other transaction open in a request or in the IPAM sync job,
+NetBox dispatches its events right after its COMMIT, and none when it rolls back. A failed row or family then
+sends no event for the changes that it reverted. This has these consequences:
 
 - Events dispatch once per transaction, not once per request or job. An object that two transactions change
   sends two events (for example `created`, then `updated`), where one request sends one combined event. This can
@@ -25,11 +26,12 @@ family then sends no event for the changes that it reverted. This has these cons
   that one. The bulk Reservation Sync stops and shows an error on the Reservations tab. A row Sync button shows the
   sync result and a separate error.
 
-The DHCP-plugin import refuses a Reservation row before its first IP address or MAC address write when a hardware
-address is not an EUI-48 address, or when NetBox has more than one MAC address row for it, because the DHCP plugin
-links the Reservation to that MAC address row. A row whose address is a conflict is reported as a conflict. The
-exception is a legacy address in the global table: the import moves it into its VRF before it finds that its
-description cannot fit, so a bad hardware address refuses that row.
+The DHCP plugin links a Reservation to the MAC address row of its hardware address. Thus the DHCP Import refuses
+a Reservation row before its first IP address or MAC address write when the hardware address is not an EUI-48
+address. It also refuses the row when NetBox has more than one MAC address row for the hardware address. A row
+whose address is a conflict is reported as a conflict. The exception is a legacy address in the global table: the
+import moves it into its VRF before it finds that its description cannot fit, so a bad hardware address refuses
+that row.
 
 The IPAM sync job, Run Now, the bulk Reservation Sync and a row Sync button write the IP address of such a
 Reservation and no MAC address row for that hardware address.
@@ -42,6 +44,8 @@ Known limits. NetBox gives a plugin no public way to remove one event from its q
   duplicated during the row fails it after a change. It also applies to a DHCP-plugin import that a caller
   runs in its own transaction, and to a deletion that the DHCP mapping guard refuses after NetBox queued the
   delete event.
+- A MAC address write is a savepoint inside its sync row. When it fails after NetBox queued its event, the row
+  keeps its IP address and NetBox dispatches the event of the reverted MAC address row.
 - On NetBox 4.3 to 4.6.8, `event_tracking` cannot be nested, so every plugin transaction is plain and the events
   of a failed row dispatch with the request. On these releases a failed request also dispatches its events.
 - An `on_commit` hook of another app that raises after a COMMIT drops the events of that transaction.

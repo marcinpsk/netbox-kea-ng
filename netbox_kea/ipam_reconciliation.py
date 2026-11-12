@@ -624,7 +624,7 @@ def claim(
     Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified Subnet mask, and
     *catalogue*, the catalogue that verified them, gives their published names; only a Reservation claim takes it.
     A Reservation claim also names its MAC rule: with *require_macs*, a hardware address that does not resolve to one
-    MAC address row refuses its row before the first write; without it, the row gets no MAC address row.
+    MAC address row refuses its row before the first write; without it, that hardware address gets no MAC address row.
     Network records carry their own canonical network and Pool bounds.
 
     Raises:
