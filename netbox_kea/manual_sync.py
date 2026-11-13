@@ -73,7 +73,9 @@ def sync_reservation(
     if refused := refusal(gate):
         return refused
     return _run(
-        server, "a Reservation", lambda: claim(server, reservation.family, [reservation], True, catalogue=catalogue)
+        server,
+        "a Reservation",
+        lambda: claim(server, reservation.family, [reservation], True, catalogue=catalogue, require_macs=False),
     )
 
 

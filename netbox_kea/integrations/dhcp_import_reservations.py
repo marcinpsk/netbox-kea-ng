@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
@@ -28,9 +28,8 @@ from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, Reservation, identity_tex
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import MANAGED_FIELDS
 from .dhcp_import_mappings import mapped_target, unlinked
-from .dhcp_import_networks import SubnetIdSettlement
-from .dhcp_import_options import OptionReferences, option_paths, upsert_options
-from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options
+from .dhcp_import_options import OptionReferences, upsert_options
+from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options, reservation_key
 from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
 from .dhcp_import_server import synthesized_name
 from .dhcp_import_summary import ImportSummary
@@ -41,7 +40,7 @@ from .dhcp_plugin_capabilities import plugin_model
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, ReservationPrefixPhase
     from ..subnet_catalogue import CatalogueSnapshot
-    from .dhcp_import_plan import Planned, PlannedOptions, ReservationKey
+    from .dhcp_import_plan import Planned, ReservationKey
 
 logger = logging.getLogger(__name__)
 
@@ -147,19 +146,23 @@ class _ReservationAdapter(RowAdapter):
 
     scope: WriteScope
     key: ReservationKey
-    reservation: Reservation
+    planned: Planned[ReservationKey, Reservation]
     subnet_obj: Any
     dhcp_server: Any
     references: OptionReferences
     claims: ClaimResult
     catalogue: CatalogueSnapshot
     adoption_servers: tuple[int, ...]
-    options: PlannedOptions
     stopped: NotWritten | None
     # The relations of the stored row that state() read: each related pk, with its Prefix if it has one.
     _stored: dict[str, dict[int, Any]] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     late_outcome = True
+
+    @property
+    def reservation(self) -> Reservation:
+        """Return the typed Reservation."""
+        return self.planned.intent
 
     @cached_property
     def _addresses(self) -> tuple:
@@ -244,10 +247,6 @@ class _ReservationAdapter(RowAdapter):
         """Return the family-qualified name of an adopted Global row, so the other family can create its own row."""
         return {"name": _reservation_name(self._scope_name(), self.reservation)} if self.subnet_obj is None else {}
 
-    def descendants(self) -> Iterator[tuple[Kind, str]]:
-        """Yield the DHCP Options of the Reservation."""
-        yield from option_paths(self.options, self.reservation.family)
-
 
 def _reservation_boot_values(reservation: Reservation) -> dict:
     """Return the DHCPv4 boot fields of a DHCP plugin Reservation. Kea's unset value (and DHCPv6) is ``None``."""
@@ -318,23 +317,22 @@ def _record_snapshot_diagnostics(observation: ReservationObservation, family: in
         )
 
 
-def _reservation_subnet(
-    scope: WriteScope, key: InSubnetReservationKey, subnet_ids: SubnetIdSettlement | None
-) -> tuple[Any, NotWritten | None]:
+def _reservation_subnet(scope: WriteScope, key: InSubnetReservationKey) -> tuple[Any, NotWritten | None]:
     """Return the Subnet row of an In-Subnet Reservation, or why its Subnet was not written.
 
-    A Subnet whose Kea subnet ID another row keeps gives its own reason. A Subnet whose write failed, or that has no
-    mapped row, was not imported.
+    A planned Subnet gives its result from the written store: a Subnet whose Kea subnet ID another row keeps gives its
+    own reason, and a Subnet whose write failed was not imported. A Subnet that the configuration read does not report
+    keeps its mapped row, else it was not imported.
     """
-    taken = subnet_ids.taken.get(key.subnet_id) if subnet_ids is not None else None
-    if taken is not None:
-        return None, taken
-    subnet_obj = None
-    if subnet_ids is None or key.subnet_id not in subnet_ids.failed:
-        subnet_obj = mapped_target(scope.server, scope.family, SubnetKey(key.subnet_id).source)
-    if subnet_obj is None:
-        return None, NotWritten(Reason.PARENT_NOT_IMPORTED, f"Subnet {key.subnet_id} was not imported.")
-    return subnet_obj, None
+    not_imported = NotWritten(Reason.PARENT_NOT_IMPORTED, f"Subnet {key.subnet_id} was not imported.")
+    subnet_key = SubnetKey(key.subnet_id)
+    if subnet_key not in scope.written:
+        stored = mapped_target(scope.server, scope.family, subnet_key.source)
+        return (stored, None) if stored is not None else (None, not_imported)
+    result = scope.written.result(subnet_key)
+    if not isinstance(result, NotWritten):
+        return result, None
+    return None, result if result.covers_subtree else not_imported
 
 
 def import_reservation_snapshot(
@@ -344,12 +342,12 @@ def import_reservation_snapshot(
     references: OptionReferences,
     *,
     adoption_servers: tuple[int, ...],
-    subnet_ids: SubnetIdSettlement | None = None,
 ) -> DelegatedPrefixStep | None:
     """Import valid typed records and report quarantined Snapshot records.
 
-    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*. An In-Subnet
-    Reservation of a Subnet that *subnet_ids* reports as taken or failed is not imported.
+    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*. An In-Subnet Reservation
+    reads its Subnet from the written store of the run, so the Subnets come first. A Reservation of a Subnet that the
+    run did not write is not imported.
 
     Return the delegated-prefix step of the imported Reservations for :func:`reconcile_delegated_prefixes`, or
     ``None`` when no Snapshot was read or their Prefixes could not be attached.
@@ -372,28 +370,40 @@ def import_reservation_snapshot(
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
-    claims = claim(server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue)
+    for key, count in Counter(reservation_key(record) for record in snapshot.records).items():
+        if count > 1:
+            summary.warn(
+                f"{key.path(family)}: Kea holds {count} records of this Reservation Identity. "
+                "The import reads only the first record, which Kea serves."
+            )
+    # The DHCP plugin links a Reservation to its MAC address row, so the import requires one.
+    claims = claim(
+        server,
+        snapshot.family,
+        snapshot.served_records,
+        force=False,
+        catalogue=observation.catalogue,
+        require_macs=True,
+    )
     imported: list[tuple[Planned[ReservationKey, Reservation], LateOutcome]] = []
     complete = snapshot.complete and not snapshot.diagnostics
-    # The claim covers every record before any DHCP row is written, so a Reservation that is not written still counts.
+    # The claim covers every served record before any DHCP row is written, so a Reservation that is not written counts.
     summary.ownership.claimed(RESERVATION, claims.addresses, complete=complete)
     for planned in keyed_reservations(observation):
         reservation, key = planned.intent, planned.key
         subnet_obj, stopped = None, None
         if isinstance(key, InSubnetReservationKey):
-            subnet_obj, stopped = _reservation_subnet(scope, key, subnet_ids)
-        options = planned_options(planned, family, references.definitions.declared)
+            subnet_obj, stopped = _reservation_subnet(scope, key)
         adapter = _ReservationAdapter(
             scope,
             key,
-            reservation,
+            planned,
             subnet_obj,
             dhcp_server,
             references,
             claims,
             observation.catalogue,
             adoption_servers,
-            options,
             stopped,
         )
         result = write_row(adapter)
@@ -401,7 +411,7 @@ def import_reservation_snapshot(
             # The delegated Prefixes of a Reservation that is not written are not claimed again.
             complete = complete and not any(_reported_prefixes(reservation).values())
             continue
-        upsert_options(scope, result.row, options, references)
+        upsert_options(scope, result.row, planned_options(planned, family, references.definitions.declared), references)
         imported.append((planned, result))
     records = [planned.intent for planned, _ in imported]
     networks = dict.fromkeys(

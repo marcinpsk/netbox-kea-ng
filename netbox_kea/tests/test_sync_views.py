@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import requests
 from bs4 import BeautifulSoup
+from dcim.models import MACAddress
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db.models.signals import pre_save
+from django.db import OperationalError
+from django.db.models.signals import post_save, pre_save
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from ipam.models import IPAddress as NbIP
@@ -86,6 +88,14 @@ def fail_ip_address_dispatch(events: list) -> None:
     """Stand in for an events pipeline that fails for the events of an IP address and accepts every other event."""
     if any(event["object_type"].model == "ipaddress" for event in events):
         raise RuntimeError("The events pipeline is down")
+
+
+DISPATCH_BATCHES: list[set[str]] = []
+
+
+def record_dispatch_batch(events: list) -> None:
+    """Stand in for NetBox's events pipeline: record the model names of each batch that one flush dispatches."""
+    DISPATCH_BATCHES.append({event["object_type"].model for event in events})
 
 
 def _make_server(**kwargs) -> Server:
@@ -799,6 +809,34 @@ class TestReservation4SyncView(_SyncViewBase):
                 self.assertContains(response, _ROW_ERROR_BADGE)
                 self.assertContains(response, "no longer in Kea")
                 self.assertFalse(NbIP.objects.exists())
+
+    def test_a_hardware_address_that_is_not_eui48_syncs_the_address_and_no_mac(self):
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
+        hardware = "02:00:00:00:00:00:00:00:51"
+        responses = {
+            **_catalogue_responses(4, 1, "10.0.0.0/24"),
+            "reservation-get": _reservation_get("mock-res.local", "10.0.0.50", **{"hw-address": hardware}),
+        }
+        with stub_kea(responses):
+            response = self.client.post(f"{url}?identifier_type=hw-address&identifier={hardware}")
+
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
+        self.assertContains(response, "Synchronized 1/1")
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())
+        self.assertFalse(MACAddress.objects.exists())
+
+    def test_a_hardware_address_with_two_mac_rows_syncs_the_address_and_writes_no_mac(self):
+        MACAddress.objects.create(mac_address="aa:bb:cc:00:00:02")
+        MACAddress.objects.create(mac_address="aa:bb:cc:00:00:02")
+
+        response = self.client.post(self._url())
+
+        self.assertNotContains(response, _ROW_ERROR_BADGE)
+        self.assertContains(response, "Synchronized 1/1")
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())
+        self.assertEqual(MACAddress.objects.count(), 2)
 
 
 class TestRowSyncReadFailures(_SyncViewBase):
@@ -1578,4 +1616,74 @@ class TestSyncEventDispatch(TransactionTestCase):
         )
         saved = [host for host in ("10.0.10.1", "10.0.10.2") if NbIP.objects.filter(address__net_host=host).exists()]
         self.assertEqual(len(saved), 1)
+        # The MAC of the committed row is in the same transaction, so it stays too.
+        hardware = next(host["hw-address"] for host in hosts if host["ip-address"] == saved[0])
+        self.assertEqual(list(MACAddress.objects.values_list("mac_address", flat=True)), [hardware])
         self.assertIn("EventDispatchError", "\n".join(logs.output))
+
+    def test_a_bulk_reservation_sync_dispatches_each_address_and_its_mac_in_one_batch(self):
+        from netbox_kea.event_scope import _NESTED_TRACKING
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a sync row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="batch-bulk-user", password="batch-pass"))
+        server = _make_server()
+        hosts = [
+            {
+                "ip-address": f"10.0.10.{n}",
+                "hostname": f"bulk-{n}",
+                "subnet-id": 1,
+                "hw-address": f"aa:bb:cc:00:10:0{n}",
+            }
+            for n in (1, 2)
+        ]
+        url = reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": server.pk, "family": 4})
+        DISPATCH_BATCHES.clear()
+        self.addCleanup(DISPATCH_BATCHES.clear)
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.record_dispatch_batch"]),
+            stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}),
+        ):
+            self.client.post(url)
+
+        self.assertEqual(
+            (
+                {str(ip.address.ip) for ip in NbIP.objects.all()},
+                {str(mac).lower() for mac in MACAddress.objects.values_list("mac_address", flat=True)},
+            ),
+            ({host["ip-address"] for host in hosts}, {host["hw-address"] for host in hosts}),
+        )
+        rows = [batch for batch in DISPATCH_BATCHES if batch & {"ipaddress", "macaddress"}]
+        self.assertEqual(rows, [{"ipaddress", "macaddress"}] * 2)
+
+    def test_limit_a_failed_mac_write_keeps_its_row_and_dispatches_the_reverted_mac(self):
+        from netbox_kea.event_scope import _NESTED_TRACKING
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a sync row is a plain transaction and dispatches with the request")
+        self.client.force_login(User.objects.create_superuser(username="mac-fail-user", password="mac-fail-pass"))
+        server = _make_server()
+        hosts = [{"ip-address": "10.0.10.1", "hostname": "bulk-1", "subnet-id": 1, "hw-address": "aa:bb:cc:00:10:01"}]
+        url = reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": server.pk, "family": 4})
+
+        def fail_after_the_event(sender, instance, created, **kwargs):
+            raise OperationalError("simulated failure after NetBox queued the MAC address event")
+
+        post_save.connect(fail_after_the_event, sender=MACAddress, weak=False)
+        self.addCleanup(post_save.disconnect, fail_after_the_event, sender=MACAddress)
+        DISPATCH_BATCHES.clear()
+        self.addCleanup(DISPATCH_BATCHES.clear)
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.record_dispatch_batch"]),
+            stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}),
+        ):
+            self.client.post(url)
+
+        # A failed MAC address write keeps the claim of its row, as a Manual Sync of a Lease does.
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.10.1").exists())
+        self.assertFalse(MACAddress.objects.exists())
+        self.assertEqual(
+            [batch for batch in DISPATCH_BATCHES if batch & {"ipaddress", "macaddress"}],
+            [{"ipaddress", "macaddress"}],
+            "NetBox now discards a savepoint's events: remove this accepted limit",
+        )

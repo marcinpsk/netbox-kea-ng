@@ -664,11 +664,16 @@ class TestReservationMutationViews(_ViewTestBase):
         )
 
     def test_create_warns_when_ownership_claim_returns_a_row_error(self):
-        from dcim.models import MACAddress
         from django.contrib.messages import get_messages
+        from django.db import OperationalError
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
 
-        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:ff")
-        MACAddress.objects.create(mac_address="aa:bb:cc:dd:ee:ff")
+        def fail_the_row(sender, **kwargs):
+            raise OperationalError("simulated database failure of the IP address write")
+
+        pre_save.connect(fail_the_row, sender=IPAddress, weak=False)
+        self.addCleanup(pre_save.disconnect, fail_the_row, sender=IPAddress)
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {
