@@ -5,11 +5,11 @@
 The plan is pure. It reads no database, no DHCP plugin and no Kea, so a test can build it from recorded Kea
 replies. Each planned object carries its key. A key gives its :class:`MappingSource`, the DHCP Import Mapping
 identity in the columns of ``KeaDhcpLink`` that the apply step reads and writes, and its Kea path. :data:`KEY_KINDS`
-gives the key class that decodes a source of each kind. The plan keeps the Reservation
-observation, and :func:`keyed_reservations` keys its records. :func:`observations` gives the Kea sources that the
-read reports for each mapped kind, and whether the read is Complete for that kind: the removal of Stale DHCP Import
-Objects and the drift view both use it. The apply step in :mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed
-intents into plugin field values.
+gives the key class that decodes a source of each kind. The plan keeps the Reservation observation, and
+:func:`keyed_reservations` keys the record that Kea serves for each identity. :func:`observations` gives the Kea
+sources that the read reports for each mapped kind, and whether the read is Complete for that kind: the removal of
+Stale DHCP Import Objects and the drift view both use it. The apply step in
+:mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed intents into plugin field values.
 """
 
 from __future__ import annotations
@@ -762,10 +762,26 @@ def reservation_key(reservation: Reservation) -> ReservationKey:
 
 
 def keyed_reservations(observation: ReservationObservation | None) -> tuple[Planned[ReservationKey, Reservation], ...]:
-    """Key each valid record of a Reservation observation. A failed read (``None``) gives no record."""
+    """Key the first valid record of each Reservation Identity. A failed read (``None``) gives no record.
+
+    Kea can hold one identity in its configuration file and in a host database. The walk reads the configuration file
+    first, then each host database, in the order of Kea's own lookup: so the first record is the one Kea serves.
+    """
     if observation is None:
         return ()
-    return tuple(Planned(reservation_key(record), record) for record in observation.snapshot.records)
+    keyed: dict[ReservationKey, Planned[ReservationKey, Reservation]] = {}
+    for record in observation.snapshot.records:
+        key = reservation_key(record)
+        keyed.setdefault(key, Planned(key, record))
+    return tuple(keyed.values())
+
+
+def shadowed_reservations(observation: ReservationObservation | None) -> dict[ReservationKey, int]:
+    """Return the number of records of each Reservation Identity that has more than one: Kea serves only the first."""
+    if observation is None:
+        return {}
+    counts = Counter(reservation_key(record) for record in observation.snapshot.records)
+    return {key: count for key, count in counts.items() if count > 1}
 
 
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:

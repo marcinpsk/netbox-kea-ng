@@ -28,7 +28,13 @@ from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import MANAGED_FIELDS
 from .dhcp_import_mappings import mapped_target, unlinked
 from .dhcp_import_options import OptionReferences, upsert_options
-from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options
+from .dhcp_import_plan import (
+    InSubnetReservationKey,
+    SubnetKey,
+    keyed_reservations,
+    planned_options,
+    shadowed_reservations,
+)
 from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
 from .dhcp_import_server import synthesized_name
 from .dhcp_import_summary import ImportSummary
@@ -369,6 +375,11 @@ def import_reservation_snapshot(
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
+    for key, count in shadowed_reservations(observation).items():
+        summary.warn(
+            f"{key.path(family)}: Kea holds {count} records of this Reservation Identity. "
+            "The import used the first record, which Kea serves."
+        )
     # The DHCP plugin links a Reservation to its MAC address row, so the import requires one.
     claims = claim(
         server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue, require_macs=True

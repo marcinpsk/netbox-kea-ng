@@ -15,10 +15,9 @@ import unittest
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
-import pytest
 from django.apps import apps
 from django.db import DatabaseError, transaction
 from django.db.models.signals import pre_save
@@ -54,9 +53,11 @@ from netbox_kea.integrations.dhcp_import_server import upsert_dhcp_server
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_import_write import FAILED, NotWritten, WriteOrderError, WriteScope, WrittenStore
 from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
+from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink, next_confirmation_number
 from netbox_kea.pools import Pool
+from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot
 
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .utils import _make_db_server, imported_dhcp_server, optional_shared_network_prefix
@@ -1320,24 +1321,74 @@ class RowWriteTableTest(TestCase):
         stored.refresh_from_db()
         self.assertEqual((stored.hostname, stored.subnet.subnet_id), ("host-b", 10))
 
-    # Each record of one identity has its own Reservation entry: a known limit of the one-entry rule.
-    @pytest.mark.repeated_import_fact(_SUBNET_RESERVATION)
-    def test_each_reservation_of_one_identity_skips_its_own_options(self):
-        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+    def _apply_hosts(self, fixture: _Fixture, hosts: list[dict]) -> ImportSummary:
+        """Apply a Complete read whose Reservation Snapshot holds *hosts*: a mapping that it does not report is stale."""
         config = _reservation()
-        host = {**config["subnet4"][0]["reservations"][0], "subnet-id": 10}
-        # Kea allows one host in the configuration and in a host database, so the Snapshot holds both records.
-        hosts = [{**host, "option-data": [option]} for option in host["option-data"]]
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete, intent.cutoff = True, next_confirmation_number()
+        observation = _reservation_snapshot(config, 4, hosts)
+        catalogue = observation.catalogue
+        complete = CompleteCatalogueSnapshot(**{each.name: getattr(catalogue, each.name) for each in fields(catalogue)})
+        plan = plan_family(intent, ReservationObservation(observation.snapshot, observation.cutoff, complete))
+        return dhcp_plugin.apply_plan(fixture.server, plan, fixture.capabilities)
 
-        with _refusing("Subnet"):
-            summary = dhcp_plugin.import_server_config(
-                fixture.server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4, hosts)
-            )
+    def _served_and_shadowed(self) -> tuple[dict, dict]:
+        """Return a host of the configuration file, and a host database record of the same Reservation Identity."""
+        served = {**_reservation()["subnet4"][0]["reservations"][0], "subnet-id": 10}
+        # Kea 3.2.0 accepts a reservation-add of this identity, and reservation-get-page then returns both records.
+        shadowed = {
+            **served,
+            "ip-address": "192.0.2.40",
+            "hostname": "host-b",
+            "option-data": [{"code": 15, "data": "other.example.org"}, {"code": 66, "data": "tftp.example.org"}],
+        }
+        return served, shadowed
+
+    def test_a_reservation_identity_with_two_records_imports_the_record_that_kea_serves(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        served, shadowed = self._served_and_shadowed()
+
+        summary = self._apply_hosts(fixture, [served, shadowed])
 
         self.assertEqual(
-            Counter(entry.path for entry in summary.entries if entry.path.startswith(f"{_SUBNET_RESERVATION}/")),
-            Counter(_RESERVATION_OPTIONS),
+            Counter(
+                (entry.kind, entry.path, entry.outcome)
+                for entry in summary.entries
+                if entry.path.startswith(_SUBNET_RESERVATION)
+            ),
+            Counter(
+                [
+                    (Kind.RESERVATION, _SUBNET_RESERVATION, Outcome.CREATED),
+                    *((Kind.OPTION, path, Outcome.CREATED) for path in _RESERVATION_OPTIONS),
+                ]
+            ),
         )
+        self.assertIn(
+            f"{_SUBNET_RESERVATION}: Kea holds 2 records of this Reservation Identity. "
+            "The import used the first record, which Kea serves.",
+            summary.warnings,
+        )
+        stored = fixture.mapped(_RESERVATION_KEY)
+        self.assertEqual((stored.hostname, str(stored.ipv4_address)), ("host-a", "192.0.2.30/24"))
+        option = fixture.mapped(OptionKey(_RESERVATION_KEY.source, DHCPOptionIdentity("dhcp4", 15, frozenset())))
+        self.assertEqual(option.data, "host.example.org")
+
+    def test_a_record_that_kea_does_not_serve_removes_the_options_that_only_it_assigned(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        served, shadowed = self._served_and_shadowed()
+        self.assertEqual(self._apply_hosts(fixture, [shadowed]).errors, 0)
+        tftp = OptionKey(_RESERVATION_KEY.source, DHCPOptionIdentity("dhcp4", 66, frozenset()))
+        self.assertIsNotNone(fixture.mapped(tftp))
+
+        summary = self._apply_hosts(fixture, [served, shadowed])
+
+        self.assertIn(
+            (Kind.OPTION, tftp.path(4), Outcome.REMOVED),
+            [(entry.kind, entry.path, entry.outcome) for entry in summary.entries],
+        )
+        self.assertIsNone(fixture.mapped(tftp))
+        stored = fixture.mapped(_RESERVATION_KEY)
+        self.assertEqual((stored.hostname, str(stored.ipv4_address)), ("host-a", "192.0.2.30/24"))
 
 
 _ORDER = (
