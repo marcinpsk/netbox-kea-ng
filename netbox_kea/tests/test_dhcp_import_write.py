@@ -18,16 +18,24 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
+import pytest
 from django.apps import apps
 from django.db import DatabaseError, transaction
 from django.db.models.signals import pre_save
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from extras.validators import CustomValidator
 
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionIdentity
 from netbox_kea.integrations import dhcp_plugin
-from netbox_kea.integrations.dhcp_import_networks import released_client_class_name
+from netbox_kea.integrations.dhcp_import_networks import (
+    ClassReferences,
+    claim_config_networks,
+    released_client_class_name,
+    settle_subnet_ids,
+    upsert_subnet,
+)
+from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences, upsert_options
 from netbox_kea.integrations.dhcp_import_plan import (
     InSubnetReservationKey,
     MappingSource,
@@ -38,9 +46,13 @@ from netbox_kea.integrations.dhcp_import_plan import (
     PoolKey,
     SubnetKey,
     plan_family,
+    planned_options,
 )
 from netbox_kea.integrations.dhcp_import_report import Capability, Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot
+from netbox_kea.integrations.dhcp_import_server import upsert_dhcp_server
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
+from netbox_kea.integrations.dhcp_import_write import FAILED, NotWritten, WriteOrderError, WriteScope, WrittenStore
 from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink, next_confirmation_number
@@ -567,6 +579,25 @@ _CLASS_ROWS = (
         ),
         None,
         refuse="ClientClass",
+    ),
+    _Row(
+        "write failure of its Option Definition",
+        _CLASS_KEY,
+        _client_class(),
+        (
+            _created(Kind.CLIENT_CLASS, _CLASS),
+            (Kind.OPTION_DEFINITION, _CLASS_DEF, *_FAILED),
+            (
+                Kind.OPTION,
+                _CLASS_OPTION,
+                Outcome.SKIPPED,
+                Reason.PARENT_NOT_IMPORTED,
+                "Its Option Definition is not imported. See server logs.",
+                None,
+            ),
+        ),
+        {"name": "lab", "test": "member('KNOWN')", "row": "new"},
+        refuse="OptionDefinition",
     ),
 )
 
@@ -1142,6 +1173,13 @@ _OPTION_ROWS = (
 )
 
 
+def _import(fixture: _Fixture, config: dict) -> ImportSummary:
+    """Run the DHCP Import of *config* for the Server of *fixture*, with the Reservation Snapshot of *config*."""
+    return dhcp_plugin.import_server_config(
+        fixture.server, parse_dhcp_config(config, fixture.family), _reservation_snapshot(config, fixture.family)
+    )
+
+
 def _in_scope(path: str, paths: tuple[str, ...]) -> bool:
     return any(path == each or path.startswith(f"{each}/") for each in paths)
 
@@ -1239,3 +1277,164 @@ class RowWriteTableTest(TestCase):
 
     def test_option_rows(self):
         self._assert_rows(_OPTION_ROWS, self._plugin_0_2_0())
+
+    def test_a_reservation_of_a_mapped_subnet_whose_write_fails_keeps_its_stored_row(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        fixture.apply_cleanly(_reservation())
+        stored = fixture.mapped(_RESERVATION_KEY)
+        config = _reservation("host-b")
+        config["subnet4"][0]["valid-lifetime"] = 7200
+
+        with _refusing("Subnet") as refused:
+            summary = _import(fixture, config)
+
+        self.assertTrue(refused)
+        self.assertEqual(
+            [
+                (entry.kind, entry.outcome, entry.reason, entry.detail)
+                for entry in summary.entries
+                if entry.path in {_SUBNET, _SUBNET_RESERVATION}
+            ],
+            [(Kind.SUBNET, *_FAILED[:3]), (Kind.RESERVATION, *_SUBNET_NOT_IMPORTED[:3])],
+        )
+        # The Reservation does not attach to the stored Subnet row, so the stored Reservation keeps its hostname.
+        stored.refresh_from_db()
+        self.assertEqual(stored.hostname, "host-a")
+
+    def test_a_reservation_of_a_mapped_subnet_that_the_configuration_does_not_hold_updates_its_row(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        fixture.apply_cleanly(_reservation())
+        stored = fixture.mapped(_RESERVATION_KEY)
+        config = _reservation("host-b")
+        without_subnet = {**config, "subnet4": []}
+
+        summary = dhcp_plugin.import_server_config(
+            fixture.server, parse_dhcp_config(without_subnet, 4), _reservation_snapshot(config, 4)
+        )
+
+        self.assertEqual(
+            [(entry.outcome, entry.reason) for entry in summary.entries if entry.path == _SUBNET_RESERVATION],
+            [(Outcome.UPDATED, None)],
+        )
+        # The Reservation attaches to the stored row of its Subnet, which the configuration read did not report.
+        stored.refresh_from_db()
+        self.assertEqual((stored.hostname, stored.subnet.subnet_id), ("host-b", 10))
+
+    # Each record of one identity has its own Reservation entry: a known limit of the one-entry rule.
+    @pytest.mark.repeated_import_fact(_SUBNET_RESERVATION)
+    def test_each_reservation_of_one_identity_skips_its_own_options(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        config = _reservation()
+        host = {**config["subnet4"][0]["reservations"][0], "subnet-id": 10}
+        # Kea allows one host in the configuration and in a host database, so the Snapshot holds both records.
+        hosts = [{**host, "option-data": [option]} for option in host["option-data"]]
+
+        with _refusing("Subnet"):
+            summary = dhcp_plugin.import_server_config(
+                fixture.server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4, hosts)
+            )
+
+        self.assertEqual(
+            Counter(entry.path for entry in summary.entries if entry.path.startswith(f"{_SUBNET_RESERVATION}/")),
+            Counter(_RESERVATION_OPTIONS),
+        )
+
+
+_ORDER = (
+    "The apply writes the Option Definitions and the client classes before any DHCP Option, the Shared Networks "
+    "before the Subnets, and the Subnets before the Reservations."
+)
+
+
+class WrittenStoreTest(SimpleTestCase):
+    """The written store of one run gives the result of each planned object, and refuses a read before the result."""
+
+    def setUp(self):
+        self.store = WrittenStore(plan_family(parse_dhcp_config(_reservation(), 4), None))
+
+    def test_a_read_of_a_planned_object_that_the_run_has_not_decided_names_the_order(self):
+        for key in (_SUBNET_KEY, _CLASS_KEY):
+            with self.subTest(key=key), self.assertRaisesMessage(WriteOrderError, _ORDER):
+                self.store.result(key)
+        with self.assertRaisesMessage(WriteOrderError, f"A step reads {_SUBNET} before the run decides it."):
+            self.store.row(_SUBNET_KEY)
+
+    def test_a_key_that_the_plan_does_not_hold_reads_as_not_imported(self):
+        self.assertNotIn(SubnetKey(11), self.store)
+        self.assertEqual(self.store.result(SubnetKey(11)), NotWritten(Reason.PARENT_NOT_IMPORTED))
+        self.assertIsNone(self.store.row(SubnetKey(11)))
+        with self.assertRaisesMessage(ValueError, "The plan of the run holds no subnet Dhcp4/subnet4[id=11]."):
+            self.store.record(SubnetKey(11), FAILED)
+
+    def test_a_decided_object_reads_as_its_row_or_why_the_run_did_not_write_it(self):
+        row = object()
+        self.store.record(_SUBNET_KEY, row)
+        self.store.record(_CLASS_KEY, FAILED)
+
+        self.assertIs(self.store.result(_SUBNET_KEY), row)
+        self.assertIs(self.store.row(_SUBNET_KEY), row)
+        self.assertEqual(self.store.result(_CLASS_KEY), FAILED)
+        self.assertIsNone(self.store.row(_CLASS_KEY))
+
+    def test_a_run_that_ends_with_an_undecided_planned_object_names_it(self):
+        with self.assertRaisesMessage(WriteOrderError, f"The run ended before it decided Dhcp4, {_CLASS}, "):
+            self.store.require_decided()
+        plan = plan_family(parse_dhcp_config(_reservation(), 4), None)
+        options = (key for each in plan.option_sets() for key in each.keys if key is not None)
+        for key in (*(planned.key for planned in plan.objects()), *options):
+            self.store.record(key, FAILED)
+
+        self.store.require_decided()
+
+
+class WriteOrderTest(TestCase):
+    """A step that runs before the step whose result it reads fails the run with the order, not with a silent miss."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _scope(self, server, plan) -> WriteScope:
+        return WriteScope(server, 4, ImportSummary(), probe(), WrittenStore(plan))
+
+    def test_an_option_before_the_option_definition_step_raises_the_order_error(self):
+        fixture = _Fixture(self, 4, probe())
+        plan = plan_family(parse_dhcp_config(_definition(), 4), None)
+        scope = self._scope(fixture.server, plan)
+        dhcp_server, _ = upsert_dhcp_server(fixture.server, 4)
+        references = OptionReferences(CustomDefinitions(plan.declared_definitions, ()), ClassReferences(scope.written))
+        options = planned_options(plan.server, 4, plan.declared_definitions)
+
+        with self.assertRaisesMessage(WriteOrderError, f"A step reads {_DEF} before the run decides it. {_ORDER}"):
+            upsert_options(scope, dhcp_server, options, references)
+
+    def test_a_reservation_before_the_subnet_step_raises_the_order_error(self):
+        fixture = _Fixture(self, 4, probe())
+        fixture.apply_cleanly(_reservation())
+        stored = fixture.mapped(_RESERVATION_KEY)
+        config = _reservation("host-b")
+        plan = plan_family(parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
+        scope = self._scope(fixture.server, plan)
+        references = dhcp_plugin.import_definitions_and_classes(scope, fixture.dhcp_server(), plan, ())
+
+        with self.assertRaisesMessage(WriteOrderError, f"A step reads {_SUBNET} before the run decides it."):
+            import_reservation_snapshot(
+                scope, fixture.dhcp_server(), plan.reservations, references, adoption_servers=()
+            )
+        stored.refresh_from_db()
+        self.assertEqual(stored.hostname, "host-a")
+
+    def test_a_row_write_whose_class_list_reads_before_the_class_step_raises_the_order_error(self):
+        fixture = _Fixture(self, 4, probe())
+        plan = plan_family(parse_dhcp_config(_subnet(reservations=False), 4), None)
+        scope = self._scope(fixture.server, plan)
+        dhcp_server, _ = upsert_dhcp_server(fixture.server, 4)
+        references = OptionReferences(CustomDefinitions(plan.declared_definitions, ()), ClassReferences(scope.written))
+        prefix_claims, _, _ = claim_config_networks(fixture.server, plan)
+        subnet_ids = settle_subnet_ids(fixture.server, dhcp_server, plan, probe(), scope.summary)
+
+        # The read is inside the row write, which reports every other error as a write failure.
+        with self.assertRaisesMessage(WriteOrderError, f"A step reads {_CLASS} before the run decides it."):
+            upsert_subnet(scope, dhcp_server, plan.subnets[0], prefix_claims, subnet_ids, references)

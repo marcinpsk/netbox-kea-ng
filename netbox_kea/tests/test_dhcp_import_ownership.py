@@ -22,13 +22,9 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
-from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
-from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot, reconcile_delegated_prefixes
+from netbox_kea.integrations.dhcp_import_server import synthesized_name
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
-from netbox_kea.integrations.dhcp_import_write import WriteScope
-from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
     PoolClaim,
     ReservationPrefixPhase,
@@ -650,16 +646,18 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(self.delegated().status, "active")
 
     def _import_one_skipped_reservation(self, **skipped) -> ImportSummary:
-        """Import the Reservation into Subnet 9, which this run did not write, so the Reservation is skipped."""
-        conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
-        observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9, **skipped}])
-        summary = ImportSummary()
-        references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
-        scope = WriteScope(self.server, 6, summary, probe())
-        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
-        assert step is not None
-        reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
-        self.assertEqual(summary.reservations_skipped, 1)
+        """Run a DHCP Import whose Reservation is in Subnet 9, whose name an operator Subnet holds, so it is skipped."""
+        apps.get_model("netbox_dhcp", "Subnet").objects.create(
+            name=synthesized_name(self.server.name, " DHCPv6 subnet 9"),
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:99::/64")),
+            dhcp_server=apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name="subnet name holder"),
+            subnet_id=99,
+        )
+        config = {"subnet6": [*self.config["subnet6"], {"id": 9, "subnet": "2001:db8:9::/64"}]}
+        with stub_kea(_sync_responses({6: config}, {6: [{**self.identity, "subnet-id": 9, **skipped}]})):
+            summary = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)[0][1]
+        assert isinstance(summary, ImportSummary), summary
+        self.assertEqual(summary.reservations_skipped, 1, summary.warnings)
         return summary
 
     def test_a_skipped_reservation_that_reports_its_prefix_preserves_the_stale_delegated_link(self):
@@ -672,7 +670,7 @@ class ImportOwnershipTest(TestCase):
     def test_a_skipped_reservation_without_delegated_prefixes_completes_the_delegated_prefix_source(self):
         self.import_hosts([{**self.identity, "prefixes": [self.network]}])
         summary = self._import_one_skipped_reservation()
-        # Kea reports the prefix nowhere now, so the complete phase drops its link; the old DHCP row keeps the Prefix.
+        # Kea reports the prefix nowhere now, so the complete phase drops its link.
         self.assertIn("reservation-prefix", summary.ownership.completed_sources)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=self.delegated()).exists())
 

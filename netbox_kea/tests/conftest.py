@@ -106,6 +106,7 @@ def pytest_configure(config) -> None:
     ``auto`` and ``logical`` stay xdist's decision, capped by the hook.
     """
     _refuse_a_dotted_coverage_source(config)
+    config.addinivalue_line("markers", "repeated_import_fact(path): the DHCP Import may record two entries at path")
     requested = getattr(config.option, "numprocesses", None)
     if not isinstance(requested, int) or requested <= MAX_PARALLEL_WORKERS:
         return
@@ -299,11 +300,14 @@ def _policy_table_autovacuum_after_migrations(request, django_db_blocker):
 
 
 @pytest.fixture(autouse=True)
-def _one_entry_per_import_fact():
+def _one_entry_per_import_fact(request):
     """Fail a test whose DHCP Import records two entries for one Kea fact: each fact has one outcome (CONTEXT.md).
 
-    The check runs at teardown, because the import catches broad exceptions around its writes.
+    The check runs at teardown, because the import catches broad exceptions around its writes. A test marked
+    ``repeated_import_fact`` names the paths where a known limit records two entries.
     """
+    marker = request.node.get_closest_marker("repeated_import_fact")
+    allowed = frozenset(marker.args) if marker is not None else frozenset()
     from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 
     record = ImportSummary.record
@@ -314,7 +318,8 @@ def _one_entry_per_import_fact():
         return (entry.family, entry.kind, entry.path, entry.capability)
 
     def record_once(summary, entry):
-        repeated.extend((earlier, entry) for earlier in summary.entries if fact(earlier) == fact(entry))
+        if entry.path not in allowed:
+            repeated.extend((earlier, entry) for earlier in summary.entries if fact(earlier) == fact(entry))
         record(summary, entry)
 
     with patch.object(ImportSummary, "record", record_once):
