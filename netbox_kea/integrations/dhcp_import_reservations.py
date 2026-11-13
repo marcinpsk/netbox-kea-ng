@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
@@ -28,7 +29,7 @@ from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import MANAGED_FIELDS
 from .dhcp_import_mappings import mapped_target, unlinked
 from .dhcp_import_options import OptionReferences, upsert_options
-from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options
+from .dhcp_import_plan import InSubnetReservationKey, SubnetKey, keyed_reservations, planned_options, reservation_key
 from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
 from .dhcp_import_server import synthesized_name
 from .dhcp_import_summary import ImportSummary
@@ -369,13 +370,24 @@ def import_reservation_snapshot(
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
+    for key, count in Counter(reservation_key(record) for record in snapshot.records).items():
+        if count > 1:
+            summary.warn(
+                f"{key.path(family)}: Kea holds {count} records of this Reservation Identity. "
+                "The import reads only the first record, which Kea serves."
+            )
     # The DHCP plugin links a Reservation to its MAC address row, so the import requires one.
     claims = claim(
-        server, snapshot.family, snapshot.records, force=False, catalogue=observation.catalogue, require_macs=True
+        server,
+        snapshot.family,
+        snapshot.served_records,
+        force=False,
+        catalogue=observation.catalogue,
+        require_macs=True,
     )
     imported: list[tuple[Planned[ReservationKey, Reservation], LateOutcome]] = []
     complete = snapshot.complete and not snapshot.diagnostics
-    # The claim covers every record before any DHCP row is written, so a Reservation that is not written still counts.
+    # The claim covers every served record before any DHCP row is written, so a Reservation that is not written counts.
     summary.ownership.claimed(RESERVATION, claims.addresses, complete=complete)
     for planned in keyed_reservations(observation):
         reservation, key = planned.intent, planned.key

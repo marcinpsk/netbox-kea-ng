@@ -5,11 +5,11 @@
 The plan is pure. It reads no database, no DHCP plugin and no Kea, so a test can build it from recorded Kea
 replies. Each planned object carries its key. A key gives its :class:`MappingSource`, the DHCP Import Mapping
 identity in the columns of ``KeaDhcpLink`` that the apply step reads and writes, and its Kea path. :data:`KEY_KINDS`
-gives the key class that decodes a source of each kind. The plan keeps the Reservation
-observation, and :func:`keyed_reservations` keys its records. :func:`observations` gives the Kea sources that the
-read reports for each mapped kind, and whether the read is Complete for that kind: the removal of Stale DHCP Import
-Objects and the drift view both use it. The apply step in :mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed
-intents into plugin field values.
+gives the key class that decodes a source of each kind. The plan keeps the Reservation observation, and
+:func:`keyed_reservations` keys the record that Kea serves for each identity. :func:`observations` gives the Kea
+sources that the read reports for each mapped kind, and whether the read is Complete for that kind: the removal of
+Stale DHCP Import Objects and the drift view both use it. The apply step in
+:mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed intents into plugin field values.
 """
 
 from __future__ import annotations
@@ -610,7 +610,7 @@ class FamilyPlan:
     client_classes: tuple[PlannedClientClass, ...]
     shared_networks: tuple[PlannedSharedNetwork, ...]
     subnets: tuple[PlannedSubnet, ...]
-    # None: the read failed. keyed_reservations() keys its records.
+    # None: the read failed. keyed_reservations() keys the records that Kea serves.
     reservations: ReservationObservation | None
     # The configuration entries that the parse dropped as invalid.
     dropped: tuple[DroppedEntry, ...]
@@ -762,10 +762,10 @@ def reservation_key(reservation: Reservation) -> ReservationKey:
 
 
 def keyed_reservations(observation: ReservationObservation | None) -> tuple[Planned[ReservationKey, Reservation], ...]:
-    """Key each valid record of a Reservation observation. A failed read (``None``) gives no record."""
+    """Key the record that Kea serves for each Reservation Identity. A failed read (``None``) gives no record."""
     if observation is None:
         return ()
-    return tuple(Planned(reservation_key(record), record) for record in observation.snapshot.records)
+    return tuple(Planned(reservation_key(record), record) for record in observation.snapshot.served_records)
 
 
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:

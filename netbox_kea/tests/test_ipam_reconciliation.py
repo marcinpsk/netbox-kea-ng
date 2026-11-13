@@ -999,6 +999,17 @@ class ReservationPhaseTest(TestCase):
         self.assertEqual(_links(row, "reservation")["owner"].facts, {"hostname": "printer", "prefix_length": 24})
         self.assertEqual((report.created, report.complete), (1, True))
 
+    def test_a_reservation_identity_with_two_records_syncs_only_the_record_that_kea_serves(self):
+        served = _reservation(hostname="served.example")
+        # Kea holds the identity in its configuration file and in a host database, and serves the first record.
+        for shadowed in ({**served, "hostname": "shadowed.example"}, {**served, "ip-address": "10.0.0.6"}):
+            with self.subTest(shadowed=shadowed):
+                NbIP.objects.all().delete()
+                report = _reconcile(self.server, reservations=[served, shadowed])
+
+                self.assertEqual((_row().dns_name, report.disagreements), ("served.example", set()))
+                self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.6").exists())
+
     def test_a_hardware_address_reservation_syncs_its_mac_address(self):
         from dcim.models import MACAddress
 
