@@ -1874,12 +1874,15 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 self.assertEqual((obj.status, obj.description), ("active", "Operator network"))
 
     def test_import_retains_policy_locks_without_deadlocking_a_later_marker_release(self):
+        from django.apps import apps
         from django.db import DatabaseError
 
         from netbox_kea.ipam_reconciliation import ReservationObservation
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
 
+        if not apps.is_installed("netbox_dhcp"):
+            self.skipTest("netbox_dhcp not installed")
         owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
         sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
@@ -1954,6 +1957,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertEqual((released.status, released.description), ("active", "Operator network"))
 
     def test_outer_import_does_not_wait_on_a_claim_blocked_by_server_deletion(self):
+        from django.apps import apps
         from django.db import DatabaseError
         from netaddr import IPNetwork
 
@@ -1962,6 +1966,8 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
 
+        if not apps.is_installed("netbox_dhcp"):
+            self.skipTest("netbox_dhcp not installed")
         owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
         sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
