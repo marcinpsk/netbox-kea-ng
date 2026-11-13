@@ -137,7 +137,7 @@ A Kea host-specific DHCP configuration for exactly one Reservation Identity. It 
 _Avoid_: Host record, static lease
 
 **Reservation Identity**:
-Within a Server and address family, the Reservation Scope together with exactly one Kea identifier type and value. All three parts are necessary. The identifier type and value alone do not identify a Reservation, because the same identifier can name one Global and one In-Subnet Reservation. Kea can hold two records of one Reservation Identity, one in its configuration file and one in a host database. Kea serves the first record that its lookup finds, so the DHCP Import uses that record and warns about the others.
+Within a Server and address family, the Reservation Scope together with exactly one Kea identifier type and value. All three parts are necessary. The identifier type and value alone do not identify a Reservation, because the same identifier can name one Global and one In-Subnet Reservation. Kea can hold two records of one Reservation Identity, one in its configuration file and one in a host database. Kea serves only the first record that its lookup finds: the configuration file comes first, then each host database.
 _Avoid_: Identifier priority, reservation key
 
 **Reservation Scope**:

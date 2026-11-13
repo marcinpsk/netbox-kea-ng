@@ -15,7 +15,7 @@ import unittest
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from django.apps import apps
@@ -23,6 +23,7 @@ from django.db import DatabaseError, transaction
 from django.db.models.signals import pre_save
 from django.test import SimpleTestCase, TestCase, override_settings
 from extras.validators import CustomValidator
+from ipam.models import IPAddress
 
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionIdentity
@@ -57,10 +58,9 @@ from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink, next_confirmation_number
 from netbox_kea.pools import Pool
-from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot
 
 from .test_integration_dhcp_plugin import _reservation_snapshot
-from .utils import _make_db_server, imported_dhcp_server, optional_shared_network_prefix
+from .utils import _make_db_server, complete_catalogue, imported_dhcp_server, optional_shared_network_prefix
 
 DHCP_PLUGIN = "netbox_dhcp"
 _SERVER = "row-write"
@@ -1327,18 +1327,17 @@ class RowWriteTableTest(TestCase):
         intent = parse_dhcp_config(config, 4)
         intent.configuration_complete, intent.cutoff = True, next_confirmation_number()
         observation = _reservation_snapshot(config, 4, hosts)
-        catalogue = observation.catalogue
-        complete = CompleteCatalogueSnapshot(**{each.name: getattr(catalogue, each.name) for each in fields(catalogue)})
+        complete = complete_catalogue(observation.catalogue)
         plan = plan_family(intent, ReservationObservation(observation.snapshot, observation.cutoff, complete))
         return dhcp_plugin.apply_plan(fixture.server, plan, fixture.capabilities)
 
-    def _served_and_shadowed(self) -> tuple[dict, dict]:
+    def _served_and_shadowed(self, address: str = "192.0.2.40") -> tuple[dict, dict]:
         """Return a host of the configuration file, and a host database record of the same Reservation Identity."""
         served = {**_reservation()["subnet4"][0]["reservations"][0], "subnet-id": 10}
         # Kea 3.2.0 accepts a reservation-add of this identity, and reservation-get-page then returns both records.
         shadowed = {
             **served,
-            "ip-address": "192.0.2.40",
+            "ip-address": address,
             "hostname": "host-b",
             "option-data": [{"code": 15, "data": "other.example.org"}, {"code": 66, "data": "tftp.example.org"}],
         }
@@ -1346,7 +1345,8 @@ class RowWriteTableTest(TestCase):
 
     def test_a_reservation_identity_with_two_records_imports_the_record_that_kea_serves(self):
         fixture = _Fixture(self, 4, self._plugin_0_2_0())
-        served, shadowed = self._served_and_shadowed()
+        # The same address with another hostname: only the served record claims it, so the facts do not disagree.
+        served, shadowed = self._served_and_shadowed("192.0.2.30")
 
         summary = self._apply_hosts(fixture, [served, shadowed])
 
@@ -1365,7 +1365,7 @@ class RowWriteTableTest(TestCase):
         )
         self.assertIn(
             f"{_SUBNET_RESERVATION}: Kea holds 2 records of this Reservation Identity. "
-            "The import used the first record, which Kea serves.",
+            "The import reads only the first record, which Kea serves.",
             summary.warnings,
         )
         stored = fixture.mapped(_RESERVATION_KEY)
@@ -1389,6 +1389,16 @@ class RowWriteTableTest(TestCase):
         self.assertIsNone(fixture.mapped(tftp))
         stored = fixture.mapped(_RESERVATION_KEY)
         self.assertEqual((stored.hostname, str(stored.ipv4_address)), ("host-a", "192.0.2.30/24"))
+
+    def test_a_record_that_kea_does_not_serve_claims_no_address(self):
+        fixture = _Fixture(self, 4, self._plugin_0_2_0())
+        served, shadowed = self._served_and_shadowed()
+
+        summary = self._apply_hosts(fixture, [served, shadowed])
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertFalse(IPAddress.objects.filter(address__net_host="192.0.2.40").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="192.0.2.30").exists())
 
 
 _ORDER = (

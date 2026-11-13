@@ -610,7 +610,7 @@ class FamilyPlan:
     client_classes: tuple[PlannedClientClass, ...]
     shared_networks: tuple[PlannedSharedNetwork, ...]
     subnets: tuple[PlannedSubnet, ...]
-    # None: the read failed. keyed_reservations() keys its records.
+    # None: the read failed. keyed_reservations() keys the records that Kea serves.
     reservations: ReservationObservation | None
     # The configuration entries that the parse dropped as invalid.
     dropped: tuple[DroppedEntry, ...]
@@ -762,26 +762,10 @@ def reservation_key(reservation: Reservation) -> ReservationKey:
 
 
 def keyed_reservations(observation: ReservationObservation | None) -> tuple[Planned[ReservationKey, Reservation], ...]:
-    """Key the first valid record of each Reservation Identity. A failed read (``None``) gives no record.
-
-    Kea can hold one identity in its configuration file and in a host database. The walk reads the configuration file
-    first, then each host database, in the order of Kea's own lookup: so the first record is the one Kea serves.
-    """
+    """Key the record that Kea serves for each Reservation Identity. A failed read (``None``) gives no record."""
     if observation is None:
         return ()
-    keyed: dict[ReservationKey, Planned[ReservationKey, Reservation]] = {}
-    for record in observation.snapshot.records:
-        key = reservation_key(record)
-        keyed.setdefault(key, Planned(key, record))
-    return tuple(keyed.values())
-
-
-def shadowed_reservations(observation: ReservationObservation | None) -> dict[ReservationKey, int]:
-    """Return the number of records of each Reservation Identity that has more than one: Kea serves only the first."""
-    if observation is None:
-        return {}
-    counts = Counter(reservation_key(record) for record in observation.snapshot.records)
-    return {key: count for key, count in counts.items() if count > 1}
+    return tuple(Planned(reservation_key(record), record) for record in observation.snapshot.served_records)
 
 
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:

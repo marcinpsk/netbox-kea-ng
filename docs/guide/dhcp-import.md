@@ -94,8 +94,8 @@ the run drops no such link.
 Kea can hold one Reservation Identity in its configuration file and in a host database at the same time:
 `reservation-add` writes only to the host database, and `reservation-get-page` then returns both records. Kea serves
 the first record that its lookup finds: the configuration file comes first, then each host database in order. The
-import writes only that record, with its DHCP Options, and adds a run warning that names the Reservation. The other
-records give no entry, and a DHCP Option that only they assign is a Stale DHCP Import Object.
+import writes only the first record that it can parse, with its DHCP Options, and adds a run warning that names the
+Reservation. The other records give no entry, and a DHCP Option that only they assign is a Stale DHCP Import Object.
 
 The import writes every custom Option Definition that Kea declares, also one that no option uses, before it writes
 any DHCP Option. A definition of the global `option-def` belongs to the DHCP Server. A definition of a client class

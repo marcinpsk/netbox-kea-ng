@@ -1058,7 +1058,7 @@ def _reservation_reports(
         logger.warning("%s is incomplete: %d diagnostic(s)", what, len(snapshot.diagnostics))
 
     reports: dict[str, _Report] = {}
-    for reservation in snapshot.records:
+    for reservation in snapshot.served_records:
         if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
             report.skipped_reservations.append(reservation)
         # No `continue`: a Global Reservation still links existing rows with fact-less reports (ADR 0002).

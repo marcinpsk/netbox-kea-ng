@@ -926,7 +926,7 @@ class KeaClient:
 
         Args:
             family: The DHCP family whose daemon holds the reservations.
-            source_index: 0 = the configuration file, 1+ = each host database. A page cursor moves on to the next.
+            source_index: 0 = the configuration file, 1+ = each host database. The cursor moves on to the next source.
             from_index: Starting offset within the source (use ``next_from`` returned
                 by a previous call to continue pagination).
             limit: Maximum number of hosts to return per page.
