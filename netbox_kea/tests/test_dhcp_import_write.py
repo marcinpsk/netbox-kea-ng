@@ -1387,6 +1387,11 @@ class RowWriteTableTest(TestCase):
             [(entry.kind, entry.path, entry.outcome) for entry in summary.entries],
         )
         self.assertIsNone(fixture.mapped(tftp))
+        option = fixture.mapped(OptionKey(_RESERVATION_KEY.source, DHCPOptionIdentity("dhcp4", 15, frozenset())))
+        self.assertEqual(option.data, "host.example.org")
+        self.assertIsNotNone(
+            fixture.mapped(OptionKey(_RESERVATION_KEY.source, DHCPOptionIdentity("dhcp4", 6, frozenset())))
+        )
         stored = fixture.mapped(_RESERVATION_KEY)
         self.assertEqual((stored.hostname, str(stored.ipv4_address)), ("host-a", "192.0.2.30/24"))
 
