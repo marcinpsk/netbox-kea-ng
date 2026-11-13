@@ -4,11 +4,12 @@
 
 :func:`write_row` writes one planned object through its :class:`RowAdapter`: in one atomic block it finds the row
 through the DHCP Import Mapping of the key, or adopts an unmapped row, writes the managed fields and relations, and
-observes the mapping. It records the entry of the object. When it does not write the object, it records an entry for
-each descendant in the planned subtree of the object too, and returns why (:class:`NotWritten`). Only this module
-decides how a failed write is reported (the failure table of :func:`write_row`). :func:`adopt_options` maps the
-unmapped DHCP Options of one parent before any Option write. The DHCPServer is the root of a run, and its failure
-ends the run, so ``upsert_dhcp_server`` and ``apply_global_settings`` in :mod:`.dhcp_import_server` write it themselves.
+observes the mapping. It records the entry of the object, and its row in the :class:`WrittenStore` of the run. When it
+does not write the object, it records why (:class:`NotWritten`) for the object and for each descendant in the planned
+subtree of the object (:func:`.dhcp_import_plan.planned_subtree`), and returns it. Only this module decides how a
+failed write is reported (the failure table of :func:`write_row`). :func:`adopt_options` maps the unmapped DHCP
+Options of one parent before any Option write. The DHCPServer is the root of a run, and its failure ends the run, so
+``upsert_dhcp_server`` and ``apply_global_settings`` in :mod:`.dhcp_import_server` write it themselves.
 """
 
 from __future__ import annotations
@@ -23,11 +24,12 @@ from django.core.exceptions import ValidationError
 from .. import event_scope
 from .dhcp_import_fields import managed_fields
 from .dhcp_import_mappings import mapped_target, mark_options_mapped, observe_mapping
+from .dhcp_import_plan import planned_subtree
 from .dhcp_import_report import REASON_OUTCOME, Capability, ImportEntry, Kind, Outcome, Reason, written
 
 if TYPE_CHECKING:
     from ..models import Server
-    from .dhcp_import_plan import MappingSource
+    from .dhcp_import_plan import FamilyPlan, MappingSource, PlannedObject
     from .dhcp_import_summary import ImportSummary
     from .dhcp_plugin_capabilities import PluginCapabilities
 
@@ -62,16 +64,79 @@ class NotWritten:
 
 #: The result of a write that failed for a reason that only the server log holds.
 FAILED = NotWritten(Reason.WRITE_FAILED, "See server logs.")
+# The result of an object that the plan of the run does not hold.
+_NOT_PLANNED = NotWritten(Reason.PARENT_NOT_IMPORTED)
+_APPLY_ORDER = (
+    "The apply writes the Option Definitions and the client classes before any DHCP Option, the Shared Networks "
+    "before the Subnets, and the Subnets before the Reservations."
+)
+
+
+class WriteOrderError(RuntimeError):
+    """A step of the apply read a planned object before the run decided it: a programming error that fails the run."""
+
+
+class WrittenStore:
+    """The result of each planned object of one run: its row, or why the run did not write it (:class:`NotWritten`).
+
+    The store holds the keys of the plan of the run and the custom Option Definitions that key its DHCP Options.
+    :func:`write_row` records the result of each object, and of each object in the planned subtree of an object that
+    it does not write. A later step reads the result of an object
+    that it depends on. The order rule: a step reads an object only after the run decided it. So a read of a planned
+    key that the run has not decided raises :class:`WriteOrderError`. A key that the plan does not hold reads as not
+    imported.
+    """
+
+    def __init__(self, plan: FamilyPlan) -> None:
+        """Hold the keys of each planned object of *plan* and of its DHCP Options, with no result yet."""
+        self.family = plan.family
+        self.declared = plan.declared_definitions
+        options = (key for each in plan.option_sets() for key in each.keys if key is not None)
+        self._planned = frozenset((*(planned.key for planned in plan.objects()), *options))
+        self._results: dict[RowKey, Any] = {}
+
+    def __contains__(self, key: object) -> bool:
+        """Return whether the plan of the run holds *key*."""
+        return key in self._planned
+
+    def record(self, key: RowKey, result: Any) -> None:
+        """Record the row of the planned object of *key*, or why the run did not write it."""
+        if key not in self._planned:
+            raise ValueError(f"The plan of the run holds no {key.kind.value} {key.path(self.family)}.")
+        self._results[key] = result
+
+    def result(self, key: RowKey) -> Any:
+        """Return the row of the object of *key*, or why the run did not write it.
+
+        A key that the plan does not hold reads as not imported. A planned key that the run has not decided raises
+        :class:`WriteOrderError`.
+        """
+        if key not in self._planned:
+            return _NOT_PLANNED
+        if key not in self._results:
+            raise WriteOrderError(f"A step reads {key.path(self.family)} before the run decides it. {_APPLY_ORDER}")
+        return self._results[key]
+
+    def row(self, key: RowKey) -> Any:
+        """Return the row of the object of *key*, or ``None`` when the run did not write it (:meth:`result`)."""
+        result = self.result(key)
+        return None if isinstance(result, NotWritten) else result
+
+    def require_decided(self) -> None:
+        """Raise :class:`WriteOrderError` when the run ends with a planned object that no step decided."""
+        if undecided := sorted(key.path(self.family) for key in self._planned - self._results.keys()):
+            raise WriteOrderError(f"The run ended before it decided {', '.join(undecided)}.")
 
 
 @dataclass(frozen=True)
 class WriteScope:
-    """The Server, family, summary and DHCP plugin capabilities that every row write of one family shares."""
+    """The Server, family, summary, DHCP plugin capabilities and written store that every row write of one run shares."""
 
     server: Server
     family: int
     summary: ImportSummary
     capabilities: PluginCapabilities
+    written: WrittenStore
 
 
 class RowState(NamedTuple):
@@ -121,6 +186,8 @@ class RowAdapter(Protocol):
 
     scope: WriteScope
     key: RowKey
+    #: The planned object, whose planned subtree a skip records; ``None`` for an object without children or Options.
+    planned: PlannedObject | None
     #: The reason of a ValidationError of the write: ``PLUGIN_GAP`` when the refusal shows a fact that the plugin cannot hold.
     refused_reason: Reason = Reason.WRITE_FAILED
     #: The caller records the created or updated entry, after it writes more of the row (:class:`LateOutcome`).
@@ -160,10 +227,6 @@ class RowAdapter(Protocol):
         """Return the entries of the facts that the write of *row* keeps as they are, such as a taken name."""
         return []
 
-    def descendants(self) -> Iterable[tuple[Kind, str]]:
-        """Return the kind and the Kea path of each object in the planned subtree of the object."""
-        return ()
-
     def state(self, row) -> RowState:
         """Return the state of the stored *row* before the write (:func:`row_state`), for a late outcome only.
 
@@ -175,10 +238,11 @@ class RowAdapter(Protocol):
 def write_row(adapter: RowAdapter) -> Any:
     """Write the object of *adapter* and its mapping. Return the row, or why the run did not write it.
 
-    With a late outcome, return a :class:`LateOutcome` and record no created or updated entry. When the object is
-    not written, each descendant in its planned subtree has an entry too. The failure table: an
-    ``EventDispatchError`` or a ``ManagedFieldsMismatch`` fails the run; a ``ValidationError`` gives the messages of
-    the plugin; any other error gives a write failure, and the server log holds it.
+    With a late outcome, return a :class:`LateOutcome` and record no created or updated entry. The written store of
+    the run holds the row. When the object is not written, each descendant in its planned subtree has an entry and a
+    result in the store too. The failure table: an ``EventDispatchError``, a ``ManagedFieldsMismatch`` or a
+    ``WriteOrderError`` fails the run; a ``ValidationError`` gives the messages of the plugin; any other error gives a
+    write failure, and the server log holds it.
     """
     scope, key = adapter.scope, adapter.key
     path = key.path(scope.family)
@@ -202,7 +266,7 @@ def write_row(adapter: RowAdapter) -> Any:
                 diagnostics = adapter.diagnostics(row)
     except event_scope.EventDispatchError:
         raise
-    except ManagedFieldsMismatch:
+    except (ManagedFieldsMismatch, WriteOrderError):
         raise
     except ValidationError as error:
         result = NotWritten(adapter.refused_reason, f"The DHCP plugin refuses it: {' '.join(error.messages)}")
@@ -217,6 +281,7 @@ def write_row(adapter: RowAdapter) -> Any:
     for entry in diagnostics:
         scope.summary.record(entry)
         scope.summary.warn(f"{entry.path}: {entry.detail}")
+    scope.written.record(key, row)
     if adapter.late_outcome:
         return LateOutcome(row, before)
     if outcome is None and adapter.changed_before:
@@ -246,12 +311,17 @@ def _find(adapter: RowAdapter) -> tuple[Any, bool, NotWritten | None]:
 
 
 def _skip(adapter: RowAdapter, path: str, result: NotWritten) -> None:
-    """Record the entry of the object that the run did not write, and an entry for each object of its subtree."""
-    family, summary = adapter.scope.family, adapter.scope.summary
-    summary.record(result.entry(family, adapter.key.kind, path))
+    """Record the entry and the result of the object that the run did not write, and of each object of its subtree."""
+    scope, key = adapter.scope, adapter.key
+    scope.summary.record(result.entry(scope.family, key.kind, path))
+    scope.written.record(key, result)
     descendant = result.descendant()
-    for kind, descendant_path in adapter.descendants():
-        summary.record(descendant.entry(family, kind, descendant_path))
+    planned = adapter.planned
+    subtree = planned_subtree(planned, scope.family, scope.written.declared) if planned is not None else ()
+    for kind, descendant_path, descendant_key in subtree:
+        scope.summary.record(descendant.entry(scope.family, kind, descendant_path))
+        if descendant_key is not None:
+            scope.written.record(descendant_key, descendant)
 
 
 def adopt_options(

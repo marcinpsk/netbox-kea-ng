@@ -5,6 +5,7 @@
 Import from this module instead of duplicating scaffold code in each test file.
 """
 
+import dataclasses
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -42,6 +43,17 @@ from .kea_stub import stub_kea
 
 if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
+
+    from netbox_kea.subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
+
+
+def complete_catalogue(catalogue: "CatalogueSnapshot") -> "CompleteCatalogueSnapshot":
+    """Return the Subnet identities of *catalogue* as a Complete Catalogue Snapshot."""
+    from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot
+
+    return CompleteCatalogueSnapshot(
+        **{each.name: getattr(catalogue, each.name) for each in dataclasses.fields(catalogue)}
+    )
 
 
 def family_url(name: str, family: int, **kwargs) -> str:

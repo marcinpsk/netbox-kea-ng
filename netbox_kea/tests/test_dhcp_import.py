@@ -9,7 +9,6 @@ import ipaddress
 import json
 import unittest
 from collections import Counter
-from dataclasses import fields
 from datetime import UTC, datetime
 from typing import cast, get_args
 from unittest.mock import patch
@@ -78,7 +77,7 @@ from netbox_kea.reservations import (
     ReservationIdentity,
     ReservationSnapshot,
 )
-from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCatalogueSnapshot, SubnetIdentity
+from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity
 
 from .kea_stub import _subnet_list, _sync_responses, queued, stub_kea
 from .test_dhcp_import_ledger import KEYLESS_CAPABILITIES
@@ -86,6 +85,7 @@ from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
 from .utils import (
     _make_db_server,
+    complete_catalogue,
     imported_dhcp_server,
     imported_dhcp_servers,
     optional_shared_network_prefix,
@@ -508,10 +508,8 @@ class PDPoolPlanTest(SimpleTestCase):
 def _complete_observation(*diagnostics: ReservationDiagnostic, complete: bool = True) -> ReservationObservation:
     """Return the Reservations of :func:`_observation` read against a Complete Catalogue Snapshot."""
     observation = _observation()
-    catalogue = observation.catalogue
-    complete_catalogue = CompleteCatalogueSnapshot(**{f.name: getattr(catalogue, f.name) for f in fields(catalogue)})
     snapshot = dataclasses.replace(observation.snapshot, diagnostics=diagnostics, complete=complete)
-    return ReservationObservation(snapshot, observation.cutoff, complete_catalogue)
+    return ReservationObservation(snapshot, observation.cutoff, complete_catalogue(observation.catalogue))
 
 
 @without_dhcp_plugin()
