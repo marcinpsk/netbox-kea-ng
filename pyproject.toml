@@ -77,7 +77,7 @@ dev = [
 ]
 # The documentation site generator.
 docs = [
-  "zensical>=0.0.69,<0.1.0",
+  "zensical>=0.0.69,<0.2.0",
 ]
 
 [build-system]
