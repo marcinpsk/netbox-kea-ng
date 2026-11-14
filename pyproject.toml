@@ -60,7 +60,7 @@ dev = [
   "imageio-ffmpeg>=0.6.0,<1.0.0",
   # The CommonMark parser of scripts/check_docs_media.py: it reads the README images as GitHub does.
   "markdown-it-py>=4.0.0,<5.0.0",
-  "tree-sitter==0.26.0",
+  "tree-sitter==0.26.1",
   "tree-sitter-bash==0.25.1",
   "pynetbox>=7.3.0,<7.10.0",
   "django-stubs[compatible-mypy]>=5.0.0,<7.0.0",
