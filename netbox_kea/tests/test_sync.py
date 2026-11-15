@@ -284,7 +284,9 @@ class TestOwnershipClaimBehavior(TestCase):
         )
         with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24"}])):
             catalogue = for_synchronization(self.server, 4)
-        return claim(self.server, 4, [reservation], force=force, catalogue=catalogue).addresses["198.18.0.20"]
+        return claim(self.server, 4, [reservation], force=force, catalogue=catalogue, require_macs=True).addresses[
+            "198.18.0.20"
+        ]
 
     def test_repeated_lease_claim_is_idempotent_and_keeps_the_mac(self):
         from dcim.models import MACAddress

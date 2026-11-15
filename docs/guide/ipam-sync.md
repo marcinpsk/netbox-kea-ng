@@ -48,6 +48,9 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
     - The MAC address description `dhcp_hostname: <name>` takes the same name from both sources, so a lease and
       its reservation do not change it on each run
     - Global reservations create and change no IP address
+    - When Kea holds two records of one Reservation identifier, for example in the configuration file and in a host
+      database, only the first record that the plugin can parse counts. Kea reads its configuration file first, then
+      each host database, so this is the record that Kea serves. A quarantined earlier record does not count.
     - The description starts with the sync marker `[kea-sync: <kind>]`. Text after the marker is an operator note,
       and the sync keeps it. To release an address from the sync, remove the marker or move it away from the start.
 4. Cleans up stale IPs (the **Stale IP Cleanup** setting). A server's lease or reservation that Kea no longer

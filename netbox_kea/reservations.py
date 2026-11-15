@@ -1003,6 +1003,18 @@ class ReservationSnapshot:
             raise ValueError("A Reservation Snapshot needs an aware read time.")
 
     @property
+    def served_records(self) -> tuple[Reservation, ...]:
+        """Return the first record of each Reservation Identity: the record that Kea serves.
+
+        Kea can hold one identity in its configuration file and in a host database. The walk reads the configuration
+        file first, then each host database. Kea's lookup by identity reads them in the same order.
+        """
+        first: dict[tuple[ReservationScope, ReservationIdentity], Reservation] = {}
+        for record in self.records:
+            first.setdefault((record.scope, record.identity), record)
+        return tuple(first.values())
+
+    @property
     def traversal_truncated(self) -> bool:
         """Report whether Reservation page traversal stopped early."""
         return any(diagnostic.code in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in self.diagnostics)

@@ -579,7 +579,13 @@ class ClaimEventsFailed(event_scope.EventDispatchError):
 
 @overload
 def claim(
-    server: Server, family: Family, records: Sequence[Reservation], force: bool, *, catalogue: CatalogueSnapshot
+    server: Server,
+    family: Family,
+    records: Sequence[Reservation],
+    force: bool,
+    *,
+    catalogue: CatalogueSnapshot,
+    require_macs: bool,
 ) -> ClaimResult: ...
 
 
@@ -608,6 +614,7 @@ def claim(
     force: bool,
     *,
     catalogue: CatalogueSnapshot | None = None,
+    require_macs: bool | None = None,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
@@ -616,6 +623,8 @@ def claim(
     and grouped before any write. Lease masks and the Subnet IDs of delegated prefixes come from a live complete Kea
     Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified Subnet mask, and
     *catalogue*, the catalogue that verified them, gives their published names; only a Reservation claim takes it.
+    A Reservation claim also names its MAC rule: with *require_macs*, a hardware address that does not resolve to one
+    MAC address row refuses its row before the first write; without it, that hardware address gets no MAC address row.
     Network records carry their own canonical network and Pool bounds.
 
     Raises:
@@ -629,10 +638,12 @@ def claim(
         raise ValueError("The address family must be 4 or 6")
     if not records:
         return ClaimResult()
-    unexpected = TypeError("A Reservation claim takes the catalogue that verified it; another claim takes none.")
+    unexpected = TypeError(
+        "A Reservation claim takes the catalogue that verified it and require_macs; another claim takes neither."
+    )
     network_claims = tuple(_NETWORK_CLAIM_SOURCES)
     if isinstance(records[0], network_claims):
-        if catalogue is not None:
+        if catalogue is not None or require_macs is not None:
             raise unexpected
         return _claim_network_records(server, family, cast("Sequence[_NetworkClaim]", records), force=force)
     if any(isinstance(record, network_claims) for record in records):
@@ -641,7 +652,7 @@ def claim(
     lease_records = isinstance(records[0], LEASE_VARIANTS)
     if any(isinstance(record, LEASE_VARIANTS) != lease_records for record in records):
         raise ValueError("A claim takes one source: leases or Reservations, not both")
-    if lease_records == (catalogue is not None):
+    if lease_records == (catalogue is not None) or lease_records == (require_macs is not None):
         raise unexpected
     if lease_records and any(isinstance(record, DHCPv6PrefixLease) for record in records):
         return _claim_lease_prefixes(server, family, cast("Sequence[Lease]", records), force=force)
@@ -654,31 +665,10 @@ def claim(
     conflicts: set[str] = set()
 
     def apply(row: _Report) -> AddressClaim:
-        checked = False
-
-        def before_write() -> None:
-            nonlocal checked
-            _require_one_mac_each(row)
-            checked = True
-
-        required = source == RESERVATION
-        outcome = _claim(
-            server,
-            family,
-            source,
-            row,
-            force=force,
-            conflicts=conflicts,
-            before_write=before_write if required else None,
+        outcome, resolved_macs = _address_row(
+            server, family, source, row, force=force, conflicts=conflicts, require_macs=bool(require_macs)
         )
         ip = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_host=row.address).first()
-        resolved_macs = (
-            {}
-            if outcome == "conflict"
-            else _sync_row_macs(
-                replace(row, mac_addresses=_mac_names(server, source, row)), required=required, checked=checked
-            )
-        )
         if row.facts is None and not row.disagreement and outcome == "unchanged":
             if ip is not None and parse_marker(ip.description) is None:
                 return AddressClaim(row.address, "conflict", ip)
@@ -692,6 +682,42 @@ def claim(
 
     _claim_rows(reports.values(), SyncReport(), source, apply, lambda row: row.address, store, result)
     return result
+
+
+def _address_row(
+    server: Server,
+    family: Family,
+    source: str,
+    row: _Report,
+    *,
+    force: bool,
+    conflicts: set[str],
+    require_macs: bool,
+) -> tuple[_Outcome, dict[tuple[str, str], MACAddress]]:
+    """Write one address report and then its MAC address rows, inside the row unit of the caller.
+
+    A conflict writes no MAC address row. With *require_macs*, the MAC check runs before the first write.
+    """
+    checked = False
+
+    def before_write() -> None:
+        nonlocal checked
+        _require_one_mac_each(row)
+        checked = True
+
+    outcome = _claim(
+        server,
+        family,
+        source,
+        row,
+        force=force,
+        conflicts=conflicts,
+        before_write=before_write if require_macs else None,
+    )
+    if outcome == "conflict":
+        return outcome, {}
+    named = replace(row, mac_addresses=_mac_names(server, source, row))
+    return outcome, _sync_row_macs(named, required=require_macs, checked=checked)
 
 
 def _claim_rows(
@@ -853,6 +879,10 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     The claims of all phases run before any link is removed. The last link of the Server to an IP address goes only
     when the lease phase is complete and the Reservation phase is complete or disabled on the Server.
     Writes go to main only: the job refuses to run in a branch.
+
+    Raises:
+        EventDispatchError: When NetBox could not dispatch the events of a committed row. The run stops after it.
+
     """
     if len({phase.source for phase in phases}) != len(phases):
         raise ValueError("reconcile takes at most one phase of each source")
@@ -931,14 +961,13 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
         reports.values(),
         report,
         phase.source,
-        lambda row: _claim(server, family, phase.source, row, conflicts=report.conflicts),
+        lambda row: _address_row(
+            server, family, phase.source, row, force=False, conflicts=report.conflicts, require_macs=False
+        )[0],
         lambda row: f"{phase.source} {row.address} of Server {server.name}",
     )
     for row, outcome in rows:
         _count(report, row.address, outcome)
-        if outcome != "conflict":
-            for hw_address, hostname in _mac_names(server, phase.source, row):
-                sync_mac_address(hw_address, hostname)
     if isinstance(phase, LeasePhase) and phase.source not in report.incomplete:
         _classify(server, family, LEASE, _inactive_addresses(phase.observation), "address", report)
     return None if phase.source in report.incomplete else cutoff
@@ -1029,7 +1058,7 @@ def _reservation_reports(
         logger.warning("%s is incomplete: %d diagnostic(s)", what, len(snapshot.diagnostics))
 
     reports: dict[str, _Report] = {}
-    for reservation in snapshot.records:
+    for reservation in snapshot.served_records:
         if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
             report.skipped_reservations.append(reservation)
         # No `continue`: a Global Reservation still links existing rows with fact-less reports (ADR 0002).

@@ -118,7 +118,14 @@ class ClaimOwnershipTest(TestCase):
                 {"subnet-id": 2, "hw-address": "02:00:00:00:00:02", "ip-address": "198.18.1.10", "hostname": "b"},
             ],
         )
-        result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
+        result = claim(
+            self.server,
+            4,
+            observation.snapshot.records,
+            force=False,
+            catalogue=observation.catalogue,
+            require_macs=True,
+        )
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "created")
         self.assertEqual(result.addresses["198.18.1.10"].outcome, "error")
         self.assertEqual(list(IPAddress.objects.values_list("dns_name", flat=True)), ["a"])
@@ -144,7 +151,9 @@ class ClaimOwnershipTest(TestCase):
             ],
         )
 
-        result = claim(self.server, 4, observation.snapshot.records, force=True, catalogue=observation.catalogue)
+        result = claim(
+            self.server, 4, observation.snapshot.records, force=True, catalogue=observation.catalogue, require_macs=True
+        )
 
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "error")
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
@@ -169,7 +178,14 @@ class ClaimOwnershipTest(TestCase):
         table = f'FROM "{MACAddress._meta.db_table}"'
 
         with CaptureQueriesContext(connection) as queries:
-            result = claim(self.server, 4, observation.snapshot.records, force=False, catalogue=observation.catalogue)
+            result = claim(
+                self.server,
+                4,
+                observation.snapshot.records,
+                force=False,
+                catalogue=observation.catalogue,
+                require_macs=True,
+            )
 
         self.assertEqual(result.addresses["198.18.0.12"].outcome, "created")
         mac_reads = [q["sql"] for q in queries if table in q["sql"] and not q["sql"].startswith("INSERT")]
@@ -183,7 +199,7 @@ class ClaimOwnershipTest(TestCase):
 
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for records in ([], [reservation]):
-            result = claim(self.server, 4, records, force=True, catalogue=_catalogue({}, 4))
+            result = claim(self.server, 4, records, force=True, catalogue=_catalogue({}, 4), require_macs=True)
             self.assertEqual(result.addresses, {})
             self.assertIsNone(result.primary)
             self.assertEqual(_synchronized(result), frozenset())
@@ -219,14 +235,16 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(
             GlobalReservationScope(), ReservationIdentity("flex-id", "global"), (ip_address("198.18.0.10"),)
         )
-        result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
+        result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4), require_macs=True)
         self.assertEqual(result.addresses["198.18.0.10"].outcome, "not-applicable")
         self.assertFalse(IPAddress.objects.exists())
         for description in ("Operator row", "[kea-sync: lease]"):
             with self.subTest(description=description):
                 ip = IPAddress.objects.create(address="198.18.0.10/24", description=description)
                 before = IPAddress.objects.values().get(pk=ip.pk)
-                result = claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
+                result = claim(
+                    self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4), require_macs=True
+                )
                 expected = "conflict" if description == "Operator row" else "not-applicable"
                 self.assertEqual(result.addresses["198.18.0.10"].outcome, expected)
                 self.assertEqual(result.addresses["198.18.0.10"].ip, ip)
@@ -247,7 +265,20 @@ class ClaimOwnershipTest(TestCase):
         reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
         for family in (True, 5, 6):
             with self.subTest(family=family), self.assertRaisesMessage(ValueError, "family"):
-                claim(self.server, family, [reservation], force=True, catalogue=_catalogue({}, 4))
+                claim(self.server, family, [reservation], force=True, catalogue=_catalogue({}, 4), require_macs=True)
+        self.assertFalse(IPAddress.objects.exists())
+
+    def test_a_reservation_claim_names_its_mac_rule_and_another_claim_takes_none(self):
+        from ipaddress import ip_network
+
+        from netbox_kea.ipam_reconciliation import SubnetClaim, claim
+        from netbox_kea.reservations import GlobalReservationScope, IPv4Reservation, ReservationIdentity
+
+        reservation = IPv4Reservation(GlobalReservationScope(), ReservationIdentity("flex-id", "addressless"), ())
+        with self.assertRaisesMessage(TypeError, "require_macs"):
+            claim(self.server, 4, [reservation], force=True, catalogue=_catalogue({}, 4))
+        with self.assertRaisesMessage(TypeError, "require_macs"):
+            claim(self.server, 4, [SubnetClaim(ip_network("198.18.0.0/24"))], force=False, require_macs=False)
         self.assertFalse(IPAddress.objects.exists())
 
     def test_same_call_disagreement_never_forces_a_foreign_row_and_is_a_conflict(self):
@@ -414,7 +445,7 @@ class ClaimOwnershipTest(TestCase):
         before = IPAddress.objects.values().get(pk=foreign.pk)
         with stub_kea(_catalogue_responses_for_subnets(6, [{"id": 30, "subnet": "2001:db8::/64"}])):
             catalogue = for_synchronization(self.server, 6)
-        result = claim(self.server, 6, [reservation], force=False, catalogue=catalogue)
+        result = claim(self.server, 6, [reservation], force=False, catalogue=catalogue, require_macs=True)
         self.assertEqual(
             {address: row.outcome for address, row in result.addresses.items()},
             {"2001:db8::20": "conflict", "2001:db8::21": "created"},

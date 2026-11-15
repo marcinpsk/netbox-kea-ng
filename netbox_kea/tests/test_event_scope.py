@@ -82,7 +82,9 @@ def _host(index: int) -> dict:
 
 def _claim_hosts(server, *hosts: dict, force: bool):
     observation = _reservation_snapshot(_SUBNET, 4, list(hosts))
-    return claim(server, 4, observation.snapshot.records, force=force, catalogue=observation.catalogue)
+    return claim(
+        server, 4, observation.snapshot.records, force=force, catalogue=observation.catalogue, require_macs=True
+    )
 
 
 @contextmanager
@@ -535,6 +537,20 @@ class DhcpImportMacTest(_Recorded, TestCase):
         healthy_ip = IPAddress.objects.get(address__net_host="2001:db8:1::11")
         self.assertEqual([pk for model, pk in self.dispatched() if model is IPAddress], [healthy_ip.pk])
         self.assert_every_event_names_a_committed_row()
+
+    def test_a_hardware_address_that_is_not_eui48_refuses_the_import_row_before_its_first_write(self):
+        from netbox_kea.integrations.dhcp_plugin import import_server_config
+        from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+
+        config = {"subnet4": [{"id": 1, "subnet": "10.79.0.0/24"}]}
+        failed = {"subnet-id": 1, "hw-address": "02:00:00:00:00:00:00:00:51", "ip-address": "10.79.0.10"}
+        server = _make_db_server(name="long-hardware-import", dhcp4=True, dhcp6=False)
+        observation = _reservation_snapshot(config, 4, [failed])
+        with event_tracking(self.request):
+            import_server_config(server, parse_dhcp_config(config, 4), observation)
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.79.0.10").exists())
+        self.assertFalse(MACAddress.objects.exists())
+        self.assertEqual([model for model, _ in self.dispatched() if model in (IPAddress, MACAddress)], [])
 
 
 @override_settings(EVENTS_PIPELINE=["extras.events.process_event_queue"])

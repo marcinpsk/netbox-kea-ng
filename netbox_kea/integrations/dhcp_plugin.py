@@ -19,7 +19,8 @@ v1 scope (import + diff, read-only against Kea):
 * **Writes.** Every row except the DHCPServer goes through :func:`.dhcp_import_write.write_row`, with one small
   adapter class for its kind in the ``dhcp_import_*`` module of that kind. The protocol finds the row through its
   mapping or adopts an unmapped one, writes it, observes the mapping, reports a failure, and skips the planned subtree
-  of an object that it does not write.
+  of an object that it does not write. The written store of the run holds the result of each object for the later
+  steps, and refuses a read of an object that the run has not decided yet.
 * **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
   :mod:`.dhcp_import_write` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
 """
@@ -37,7 +38,6 @@ from .dhcp_import_networks import (
     claim_config_networks,
     import_shared_networks,
     reconcile_pd_pool_prefixes,
-    report_inherited,
     settle_subnet_ids,
     upsert_client_class,
     upsert_pd_pools,
@@ -46,7 +46,7 @@ from .dhcp_import_networks import (
 )
 from .dhcp_import_options import CustomDefinitions, OptionReferences, upsert_options, write_option_definition
 from .dhcp_import_plan import REMOVAL_ORDER, observations, plan_family, planned_options
-from .dhcp_import_report import Capability, Kind, Outcome, Reason, not_written, written
+from .dhcp_import_report import Kind, Outcome, Reason, not_written, written
 from .dhcp_import_reservations import import_reservation_snapshot, reconcile_delegated_prefixes
 from .dhcp_import_server import (
     adoption_servers,
@@ -57,7 +57,7 @@ from .dhcp_import_server import (
 )
 from .dhcp_import_stale import remove_stale_objects, stale_judgment, unobserved_kinds
 from .dhcp_import_summary import ImportSummary
-from .dhcp_import_write import WriteScope
+from .dhcp_import_write import WriteScope, WrittenStore
 from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, plugin_model, probe
 
 if TYPE_CHECKING:
@@ -161,24 +161,19 @@ def import_server_config(
     return apply_plan(server, plan_family(config, reservation_observation), probe())
 
 
-def _import_definitions_and_classes(
+def import_definitions_and_classes(
     scope: WriteScope, dhcp_server, plan: FamilyPlan, adoption_servers: tuple[int, ...]
-) -> tuple[OptionReferences, dict]:
+) -> OptionReferences:
     """Write every custom Option Definition and client class of *plan*, before any DHCP Option references them.
 
-    Return what the Options can reference, and the row of each imported client class by Kea name.
+    Return what the Options can reference. The written store of the run holds the result of each object.
     """
     definitions = CustomDefinitions(plan.declared_definitions, adoption_servers)
     for planned in plan.option_definitions:
         write_option_definition(scope, definitions, planned.key, dhcp_server)
-    rows = {}
     for planned_class in plan.client_classes:
-        row = upsert_client_class(scope, dhcp_server, planned_class, definitions)
-        if row is not None:
-            rows[planned_class.key.name] = row
-    defined = frozenset(planned.key.name for planned in plan.client_classes)
-    classes = ClassReferences(plan.family, defined, {name: row.pk for name, row in rows.items()})
-    return OptionReferences(definitions, classes), rows
+        upsert_client_class(scope, dhcp_server, planned_class, definitions)
+    return OptionReferences(definitions, ClassReferences(scope.written))
 
 
 @coordinated_import
@@ -186,12 +181,13 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     """Apply the plan of one ``(server, family)`` to the DHCP plugin, writing a gated fact only with its *capabilities*.
 
     Idempotent: re-running finds each row through its ``KeaDhcpLink`` mapping and updates it rather than
-    duplicating it.
+    duplicating it. The steps run in one fixed sequence. A step that reads the result of an earlier object reads it from the
+    written store of the run, which refuses a read before the run decides the object.
     """
     from ..ipam_sources import POOL, SUBNET
 
     summary = ImportSummary()
-    scope = WriteScope(server, plan.family, summary, capabilities)
+    scope = WriteScope(server, plan.family, summary, capabilities, WrittenStore(plan))
     root = plan.server.key.path(plan.family)
     invalid = (
         not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail)
@@ -200,6 +196,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     for entry in (*invalid, *plan.not_imported):
         summary.record(entry)
     dhcp_server, created = upsert_dhcp_server(server, plan.family)
+    scope.written.record(plan.server.key, dhcp_server)
     adopting = adoption_servers(server, dhcp_server)
 
     values = server_values(dhcp_server, plan.server, plan.family, capabilities, summary)
@@ -207,13 +204,13 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     linked = link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
     if changed is not None and (created or changed or linked):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
-    references, class_rows = _import_definitions_and_classes(scope, dhcp_server, plan, adopting)
+    references = import_definitions_and_classes(scope, dhcp_server, plan, adopting)
     declared = references.definitions.declared
-    planned_classes = {planned.key.name: planned for planned in plan.client_classes}
     upsert_options(scope, dhcp_server, planned_options(plan.server, plan.family, declared), references)
-    for name, row in class_rows.items():
-        upsert_options(scope, row, planned_options(planned_classes[name], plan.family, declared), references)
-    networks = import_shared_networks(scope, dhcp_server, plan, references)
+    for planned_class in plan.client_classes:
+        if (class_row := scope.written.row(planned_class.key)) is not None:
+            upsert_options(scope, class_row, planned_options(planned_class, plan.family, declared), references)
+    import_shared_networks(scope, dhcp_server, plan, references)
 
     prefix_claims, pool_claims, pd_pool_claims = claim_config_networks(server, plan)
     # A delegated-prefix Pool Prefix is claimed again after the stale objects go; that reconcile speaks for its source.
@@ -221,26 +218,21 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     summary.ownership.claimed(POOL, pool_claims.ranges, complete=plan.configuration_complete)
     subnet_ids = settle_subnet_ids(server, dhcp_server, plan, capabilities, summary)
     for planned_subnet in plan.subnets:
-        name = planned_subnet.intent.shared_network
-        network = networks.get(name)
-        # A member of a Shared Network that this run could hold but did not write keeps its stored parent.
-        keep = name is not None and network is None and capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX)
-        subnet_obj = upsert_subnet(
-            scope, dhcp_server, planned_subnet, prefix_claims, subnet_ids, references, network, keep
-        )
+        subnet_obj = upsert_subnet(scope, dhcp_server, planned_subnet, prefix_claims, subnet_ids, references)
         if subnet_obj is None:
             continue
-        if network is None:
-            report_inherited(summary, planned_subnet, capabilities)
         upsert_options(scope, subnet_obj, planned_options(planned_subnet, plan.family, declared), references)
         upsert_pools(scope, subnet_obj, planned_subnet, references, pool_claims)
         upsert_pd_pools(scope, subnet_obj, planned_subnet, references, pd_pool_claims)
     delegated_step = import_reservation_snapshot(
-        scope, dhcp_server, plan.reservations, references, adoption_servers=adopting, subnet_ids=subnet_ids
+        scope, dhcp_server, plan.reservations, references, adoption_servers=adopting
     )
+    scope.written.require_decided()
+    # The Reservation writes come before the stale cleanup, so the cleanup sees each kept row as the run wrote it.
     observed = observations(plan)
     judgment = stale_judgment(server, plan, observed)
     unobserved = unobserved_kinds(judgment, remove_stale_objects(judgment, plan.family, summary))
+    # The delegated-prefix reconciles come after the stale cleanup, so a Prefix that only a removed row used can go.
     if delegated_step is not None:
         reconcile_delegated_prefixes(server, plan.family, delegated_step, unobserved, summary)
     if plan.family == 6:

@@ -16,8 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .. import kea_paths
@@ -35,12 +34,6 @@ if TYPE_CHECKING:
     from .dhcp_import_plan import OptionKey, PlannedOptions
 
 
-def option_paths(planned: PlannedOptions, family: int) -> Iterator[tuple[Kind, str]]:
-    """Yield the kind and the Kea path of each DHCP Option of a planned object, for the skip of its subtree."""
-    for path in planned.paths(family):
-        yield Kind.OPTION, path
-
-
 def _send_option(opt: DHCPOption) -> str | None:
     """Map Kea ``always-send``/``never-send`` flags to the plugin's single choice."""
     if opt.always_send:
@@ -50,18 +43,17 @@ def _send_option(opt: DHCPOption) -> str | None:
     return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CustomDefinitions:
     """The custom Option Definitions that one family of a Server declares, each written once a run before any Option.
 
-    *declared* holds the definitions of the daemon and of each client class.
+    *declared* holds the definitions of the daemon and of each client class. The written store of the run holds the
+    row of each definition, or why the run did not write it.
     """
 
     declared: dict[OptionDefinitionKey, OptionDefIntent]
     # The DHCPServers whose unmapped rows of this family the import adopts (adoption_servers).
     adoption_servers: tuple[int, ...]
-    # The row of each written definition, or why the run did not write it (a NotWritten).
-    written: dict[OptionDefinitionKey, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -139,6 +131,8 @@ class _OptionDefinitionAdapter(RowAdapter):
     definitions: CustomDefinitions
     parent: Any
 
+    planned = None
+
     def _same_key(self):
         return plugin_model("OptionDefinition").objects.filter(standard=False, space=self.key.space, code=self.key.code)
 
@@ -184,9 +178,11 @@ class _OptionDefinitionAdapter(RowAdapter):
         )
 
 
-def write_option_definition(scope: WriteScope, definitions: CustomDefinitions, key: OptionDefinitionKey, parent):
-    """Write the custom Option Definition of *key* to *parent*, and keep its row or why it has none."""
-    definitions.written[key] = write_row(_OptionDefinitionAdapter(scope, key, definitions, parent))
+def write_option_definition(
+    scope: WriteScope, definitions: CustomDefinitions, key: OptionDefinitionKey, parent
+) -> None:
+    """Write the custom Option Definition of *key* to *parent*. The written store of the run keeps the result."""
+    write_row(_OptionDefinitionAdapter(scope, key, definitions, parent))
 
 
 def _declared_key(opt: DHCPOption, space: str, owner: str | None, definitions: CustomDefinitions):
@@ -217,27 +213,24 @@ def _without_its_definition(definition: NotWritten) -> NotWritten:
 
 
 def _resolve_option_definition(
-    opt: DHCPOption,
-    family: int,
-    definitions: CustomDefinitions,
-    capabilities: PluginCapabilities,
-    class_name: str | None,
+    opt: DHCPOption, scope: WriteScope, definitions: CustomDefinitions, class_name: str | None
 ):
     """Find the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
 
     As in Kea, a custom definition comes first: one that the client class *class_name* of the option declares, then
-    one that the daemon declares. A declared definition that the import could not write stays the answer. Then the
-    sys4-shipped **standard** definition (by space+code, else space+name). A custom definition that Kea does not
-    declare is never used. Returns ``None`` for an option that the plugin holds without a definition, or why the
-    option cannot be imported.
+    one that the daemon declares. The written store of the run gives its row. A declared definition that the import
+    could not write stays the answer. Then the sys4-shipped **standard** definition (by space+code, else space+name).
+    A custom definition that Kea does not declare is never used. Returns ``None`` for an option that the plugin holds
+    without a definition, or why the option cannot be imported.
     """
     OptionDefinition = plugin_model("OptionDefinition")
+    family, capabilities = scope.family, scope.capabilities
     space = opt.space or kea_paths.default_space(family)
     owners = (None,) if class_name is None else (class_name, None)
     for owner in owners:
         key = _declared_key(opt, space, owner, definitions)
         if key is not None:
-            written_definition = definitions.written[key]
+            written_definition = scope.written.result(key)
             if isinstance(written_definition, NotWritten):
                 return _without_its_definition(written_definition)
             return written_definition
@@ -356,6 +349,8 @@ class _OptionAdapter(RowAdapter):
     parent_obj: Any
     content_type: Any
 
+    planned = None
+
     def blocked(self) -> NotWritten | None:
         """Return why the plugin refuses the data of the Option, which it still pairs (gap 17)."""
         return _data_gap(self.item.option, self.item.definition, self.scope.capabilities)
@@ -411,19 +406,22 @@ def upsert_options(scope: WriteScope, parent_obj, planned_set: PlannedOptions, r
     for opt, key, path in zip(planned_set.options, planned_set.keys, paths, strict=True):
         if key is None:
             raise ValueError("A DHCP Option of an object with a mapping source has a key.")
-        definition = _resolve_option_definition(opt, family, references.definitions, scope.capabilities, class_name)
+        definition = _resolve_option_definition(opt, scope, references.definitions, class_name)
         if isinstance(definition, NotWritten):
             pending_dependency |= definition.reason == Reason.PARENT_NOT_IMPORTED
             summary.record(definition.entry(family, Kind.OPTION, path))
             summary.warn(f"{path}: {definition.detail}")
+            scope.written.record(key, definition)
             continue
-        classes = references.classes.option_classes(opt.client_classes, path, summary)
-        if classes is not None:
-            space = opt.space or kea_paths.default_space(family)
-            code = definition.code if definition is not None else opt.code
-            planned.append(_PlannedOption(opt, key, space, code, definition, classes))
-        else:
+        classes = references.classes.option_classes(opt.client_classes)
+        if isinstance(classes, NotWritten):
             pending_dependency |= references.classes.has_pending_import(opt.client_classes)
+            summary.record(classes.entry(family, Kind.OPTION, path))
+            scope.written.record(key, classes)
+            continue
+        space = opt.space or kea_paths.default_space(family)
+        code = definition.code if definition is not None else opt.code
+        planned.append(_PlannedOption(opt, key, space, code, definition, classes))
     adopts = not options_mapped(server, family, parent)
     pairing = [item for item in planned if adopts and mapped_target(server, family, item.key.source) is None]
     unmapped = []

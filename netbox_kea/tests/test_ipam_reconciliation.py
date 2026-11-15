@@ -999,6 +999,17 @@ class ReservationPhaseTest(TestCase):
         self.assertEqual(_links(row, "reservation")["owner"].facts, {"hostname": "printer", "prefix_length": 24})
         self.assertEqual((report.created, report.complete), (1, True))
 
+    def test_a_reservation_identity_with_two_records_syncs_only_the_record_that_kea_serves(self):
+        served = _reservation(hostname="served.example")
+        # Kea holds the identity in its configuration file and in a host database, and serves the first record.
+        for shadowed in ({**served, "hostname": "shadowed.example"}, {**served, "ip-address": "10.0.0.6"}):
+            with self.subTest(shadowed=shadowed):
+                NbIP.objects.all().delete()
+                report = _reconcile(self.server, reservations=[served, shadowed])
+
+                self.assertEqual((_row().dns_name, report.disagreements), ("served.example", set()))
+                self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.6").exists())
+
     def test_a_hardware_address_reservation_syncs_its_mac_address(self):
         from dcim.models import MACAddress
 
@@ -1557,24 +1568,12 @@ class ConcurrencyHarness(TransactionTestCase):
         return result
 
 
-def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
-    """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
-    from netbox_kea import event_scope
-    from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-    from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
-    from netbox_kea.integrations.dhcp_import_reservations import (
-        import_reservation_snapshot,
-        reconcile_delegated_prefixes,
-    )
-    from netbox_kea.integrations.dhcp_import_write import WriteScope
-    from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+def _import_reservations(server: Server, observation: ReservationObservation) -> ImportSummary:
+    """Run a DHCPv6 import of a configuration with no Subnet and the Reservation Snapshot of *observation*."""
+    from netbox_kea.integrations.dhcp_plugin import import_server_config
+    from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 
-    references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
-    scope = WriteScope(server, 6, summary, PluginCapabilities(frozenset()))
-    with event_scope.atomic():
-        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
-        assert step is not None
-        reconcile_delegated_prefixes(server, 6, step, set(), summary)
+    return import_server_config(server, parse_dhcp_config({"subnet6": []}, 6), observation)
 
 
 class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
@@ -1886,13 +1885,15 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 self.assertEqual((obj.status, obj.description), ("active", "Operator network"))
 
     def test_import_retains_policy_locks_without_deadlocking_a_later_marker_release(self):
+        from django.apps import apps
         from django.db import DatabaseError
 
-        from netbox_kea.integrations.dhcp_import_summary import ImportSummary
         from netbox_kea.ipam_reconciliation import ReservationObservation
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
 
+        if not apps.is_installed("netbox_dhcp"):
+            self.skipTest("netbox_dhcp not installed")
         owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
         sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
@@ -1915,7 +1916,6 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         cascaded = threading.Event()
         resume_delete = threading.Event()
         sqlstates = []
-        summary = ImportSummary()
 
         def pause_delete(execute, sql, params, many, context):
             if sql.startswith('DELETE FROM "netbox_kea_server"'):
@@ -1944,7 +1944,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                _import_reservations(owner, observation, summary)
+                return _import_reservations(owner, observation)
 
         self._start("delete-server", delete_server)
         try:
@@ -1956,26 +1956,29 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         self.assertNotIsInstance(self.results["import"], BaseException)
+        summary = self.results["import"]
         self.assertEqual(sqlstates, ["55P03"])
         self.assertEqual((summary.errors, summary.ownership.errors), (1, 1))
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
-        retry = ImportSummary()
-        _import_reservations(owner, observation, retry)
+        retry = _import_reservations(owner, observation)
         self.assertEqual(retry.errors, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
         released.refresh_from_db()
         self.assertEqual((released.status, released.description), ("active", "Operator network"))
 
     def test_outer_import_does_not_wait_on_a_claim_blocked_by_server_deletion(self):
+        from django.apps import apps
         from django.db import DatabaseError
         from netaddr import IPNetwork
 
-        from netbox_kea.integrations.dhcp_import_summary import ImportSummary
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
         from netbox_kea.ipam_reconciliation import ReservationObservation, SubnetClaim
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
 
+        if not apps.is_installed("netbox_dhcp"):
+            self.skipTest("netbox_dhcp not installed")
         owner = _make_db_server(name="import-owner", dhcp4=False, dhcp6=True)
         sibling = _make_db_server(name="sibling", dhcp4=False, dhcp6=True)
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
@@ -2004,11 +2007,10 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         cascaded = threading.Event()
         sqlstates = []
         identity_locks = 0
-        summary = ImportSummary()
 
         def observe_import(execute, sql, params, many, context):
             nonlocal identity_locks
-            if "pg_advisory" in sql or "pg_try_advisory" in sql:
+            if ("pg_advisory" in sql or "pg_try_advisory" in sql) and tuple(params or ()) != METADATA_LOCK:
                 identity_locks += 1
                 if identity_locks == 2:
                     later_row.set()
@@ -2030,7 +2032,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                _import_reservations(owner, observation, summary)
+                return _import_reservations(owner, observation)
 
         def delete_server():
             with connection.execute_wrapper(observe_delete):
@@ -2054,11 +2056,11 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertNotIn("40P01", sqlstates)
         self.assertNotIsInstance(self.results["delete-server"], BaseException)
         self.assertNotIsInstance(self.results["import"], BaseException)
+        summary = self.results["import"]
         self.assertEqual((summary.errors, summary.ownership.errors), (1, 1))
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
-        retry = ImportSummary()
-        _import_reservations(owner, observation, retry)
+        retry = _import_reservations(owner, observation)
         self.assertEqual(retry.errors, 0)
 
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):

@@ -3607,30 +3607,23 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(res.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertIsNone(res.ipv4_address)
 
-    def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
-        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-        from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
-        from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
-
+    def test_a_global_reservation_adopts_the_unmapped_row_of_its_dhcp_server(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet4": []}
         hosts = [{"subnet-id": 0, "duid": "01:02:03:04:05:06", "hostname": "global-duid-host"}]
         dhcp_server, _ = upsert_dhcp_server(self.server, 4)
-        summary = ImportSummary()
-        references = OptionReferences(CustomDefinitions({}, (dhcp_server.pk,)), ClassReferences(4, frozenset(), {}))
+        unmapped = HostReservation.objects.create(
+            name="legacy global", dhcp_server=dhcp_server, duid="01:02:03:04:05:06"
+        )
 
-        import_reservation_snapshot(
-            WriteScope(self.server, 4, summary, probe()),
-            dhcp_server,
-            _reservation_snapshot(conf, 4, hosts),
-            references,
-            adoption_servers=(dhcp_server.pk,),
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4, hosts)
         )
 
         self.assertEqual(summary.errors, 0, summary.warnings)
-        self.assertEqual(HostReservation.objects.get(hostname="global-duid-host").dhcp_server, dhcp_server)
+        adopted = HostReservation.objects.get()
+        self.assertEqual((adopted.pk, adopted.hostname), (unmapped.pk, "global-duid-host"))
+        self.assertEqual(adopted.dhcp_server, imported_dhcp_server(self.server, 4))
 
     def test_manually_curated_address_is_left_unchanged_but_still_linked(self):
         """The unattended import never claims a foreign IPAM row, and still points at it."""
@@ -4458,13 +4451,14 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced[0]).exists())
 
 
-@without_dhcp_plugin()
 class ImportSummaryCompletenessTest(TestCase):
-    """Reservation import counts must distinguish traversal and record failures.
+    """Reservation import counts must distinguish traversal and record failures."""
 
-    Needs no ``netbox_dhcp`` model: a Snapshot with no records never
-    reaches the per-record upsert, so this runs in the ordinary unit-test job.
-    """
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
 
     def _snapshot(self, *, diagnostic_code: str | None = None):
         diagnostics = (
@@ -4488,22 +4482,14 @@ class ImportSummaryCompletenessTest(TestCase):
         )
 
     def _import(self, snapshot):
-        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-        from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
-        from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+        from netbox_kea.integrations import dhcp_plugin
 
-        summary = ImportSummary()
         observation = (
             ReservationObservation(snapshot, next_confirmation_number(), _catalogue({}, 4))
             if snapshot is not None
             else None
         )
-        references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(4, frozenset(), {}))
-        scope = WriteScope(_make_db_server(), 4, summary, PluginCapabilities(frozenset()))
-        import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
-        return summary
+        return dhcp_plugin.import_server_config(_make_db_server(), parse_dhcp_config({"subnet4": []}, 4), observation)
 
     def test_absent_snapshot_reports_the_counts_as_unread(self):
         summary = self._import(None)
@@ -4531,45 +4517,35 @@ class ImportSummaryCompletenessTest(TestCase):
         self.assertEqual(summary.reservations_quarantined, 0)
 
 
-@without_dhcp_plugin()
 class SkippedReservationCompletenessTest(TestCase):
-    """A record the importer drops must be counted as skipped.
+    """A record the importer drops must be counted as skipped."""
 
-    Needs the real ``KeaDhcpLink`` table to resolve the Subnet, but never reaches the
-    per-record upsert, so it runs without ``netbox_dhcp`` installed.
-    """
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
 
     def setUp(self):
         self.server = _make_db_server()
 
-    def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
-        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
-        from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
-        from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+    def test_record_for_a_subnet_id_that_the_configuration_does_not_hold_reports_the_record_as_skipped(self):
+        from netbox_kea.integrations import dhcp_plugin
         from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 
         conf = {"subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}]}
         hosts = [{"subnet-id": 7, "hw-address": "aa:bb:cc:00:00:07", "ip-address": "198.18.7.10"}]
         snapshot = _reservation_snapshot(conf, 4, hosts)
-        summary = ImportSummary()
 
-        # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
-        import_reservation_snapshot(
-            WriteScope(self.server, 4, summary, PluginCapabilities(frozenset())),
-            None,
-            snapshot,
-            OptionReferences(CustomDefinitions({}, ()), ClassReferences(4, frozenset(), {})),
-            adoption_servers=(),
-        )
+        # The Subnet Catalogue holds Subnet 7, and the configuration does not, so the record cannot be imported.
+        summary = dhcp_plugin.import_server_config(self.server, parse_dhcp_config({"subnet4": []}, 4), snapshot)
 
         self.assertTrue(snapshot.snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(
-            summary.entries,
+            [entry for entry in summary.entries if entry.kind == Kind.RESERVATION],
             [
                 not_written(
                     4,
