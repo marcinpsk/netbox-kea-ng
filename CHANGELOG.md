@@ -13,6 +13,76 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.14.2 (2026-11-15)
+
+### Bug Fixes
+
+- **dhcp-import**: Import the Reservation record that Kea serves
+  ([`df5466c`](https://github.com/marcinpsk/netbox-kea-ng/commit/df5466c37138e948f76a7008c838b4035edde384))
+
+- **dhcp-import**: Keep the Reservation results of the written store change
+  ([`1616160`](https://github.com/marcinpsk/netbox-kea-ng/commit/1616160b23fa8c971a64872efb70533c49f67984))
+
+- **dhcp-import**: The written store holds the DHCP server and each skipped Option
+  ([`eff41bb`](https://github.com/marcinpsk/netbox-kea-ng/commit/eff41bb293bb8e6f23007651746917315c9c4a16))
+
+- **ipam**: Claim only the Reservation record that Kea serves
+  ([`26cc8f9`](https://github.com/marcinpsk/netbox-kea-ng/commit/26cc8f9f6871231edf4e611053ea955fa2345ae1))
+
+### Chores
+
+- **deps**: Bump pydantic from 2.14.2 to 2.14.3
+  ([`425e5c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/425e5c9205bb12999011f4adf3fd1d5bd7d3001b))
+
+- **deps-dev**: Bump markdown-it-py from 4.2.0 to 4.3.0
+  ([`aa5c57a`](https://github.com/marcinpsk/netbox-kea-ng/commit/aa5c57adfc60ba83283b180cd93a314c46deb894))
+
+- **deps-dev**: Bump playwright from 1.64.1 to 1.65.0
+  ([`8354153`](https://github.com/marcinpsk/netbox-kea-ng/commit/83541539ec39880fa11496e4bbb6197a1215fcb6))
+
+- **deps-dev**: Bump tree-sitter from 0.26.0 to 0.26.1
+  ([`4726c82`](https://github.com/marcinpsk/netbox-kea-ng/commit/4726c82aeba7e9cd827baf909847ca23f6693326))
+
+- **deps-dev**: Bump zensical from 0.0.74 to 0.1.1
+  ([`bb1fd24`](https://github.com/marcinpsk/netbox-kea-ng/commit/bb1fd2410c3552e571cd8603aa0689211df250b1))
+
+### Documentation
+
+- Pin the reverted MAC event of a sync row as an accepted limit
+  ([`1cf5859`](https://github.com/marcinpsk/netbox-kea-ng/commit/1cf585975b9e563f493378b22ec9e0344563061d))
+
+### Refactoring
+
+- **dhcp-import**: One written store per run replaces the mutated hand-offs
+  ([`08b4541`](https://github.com/marcinpsk/netbox-kea-ng/commit/08b4541050511fc4df371e06ac9380baff9705ec))
+
+- **dhcp-import**: The plan names the children of each object
+  ([`1ce0c60`](https://github.com/marcinpsk/netbox-kea-ng/commit/1ce0c60de1275f8b668bcd8fa6a5d44ada835372))
+
+- **ipam**: One address row step for claim and reconcile
+  ([`b56f66b`](https://github.com/marcinpsk/netbox-kea-ng/commit/b56f66b84572ddd6b091578d704aa213e077e9e4))
+
+### Testing
+
+- Provoke the Reservation add row error with a failed IP address write
+  ([`b279d3b`](https://github.com/marcinpsk/netbox-kea-ng/commit/b279d3b2cb31df9ace18cf6dfe6adb4f88cb466f))
+
+- Run the hand-built DHCP Import hand-offs through the import
+  ([`db349c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/db349c94e482a750eac9a08d5acd424c20c1145c))
+
+- **dhcp-import**: Check the served Options after a shadowed record is replaced
+  ([`771d699`](https://github.com/marcinpsk/netbox-kea-ng/commit/771d699c87f68dc9668a7f59c1f76f4cd4376728))
+
+- **ipam**: Run the concurrent Reservation imports through import_server_config
+  ([`8168525`](https://github.com/marcinpsk/netbox-kea-ng/commit/81685250166838460c19c7f8b854dff761bbd226))
+
+- **ipam**: Skip the two concurrent import tests without netbox_dhcp
+  ([`1f875b8`](https://github.com/marcinpsk/netbox-kea-ng/commit/1f875b871f09895e2deed9770e2c7cadc78caaab))
+
+- **sync**: Check the per-row event batch of a bulk sync with two Reservations
+  ([`143e082`](https://github.com/marcinpsk/netbox-kea-ng/commit/143e08216b65f55cf79cded63308eb985bbe7cce))
+
+
 ## v3.14.1 (2026-11-12)
 
 ### Bug Fixes
