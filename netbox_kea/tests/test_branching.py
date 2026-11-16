@@ -2468,6 +2468,33 @@ class RenderedSubmissionControlsTest(TransactionTestCase):
         )
 
 
+class BranchingVersionTest(SimpleTestCase):
+    def test_startup_refuses_netbox_branching_before_1_2_2(self):
+        from unittest.mock import patch
+
+        from django.core.exceptions import ImproperlyConfigured
+
+        for version in ("1.2.1", "1.2.2rc1"):
+            with self.subTest(version=version):
+                with patch.object(apps.get_app_config("netbox_branching"), "version", version):
+                    with self.assertRaisesRegex(
+                        ImproperlyConfigured, rf"netbox-branching 1\.2\.2 or later\. Version {version} is installed\."
+                    ):
+                        branching.register()
+
+    def test_startup_accepts_netbox_branching_1_2_2(self):
+        from unittest.mock import patch
+
+        from django.core.exceptions import ImproperlyConfigured
+
+        # The wrong GZip order stops register() at the next check, so the version check is the one that passed.
+        middleware = [*settings.MIDDLEWARE, "django.middleware.gzip.GZipMiddleware"]
+        with patch.object(apps.get_app_config("netbox_branching"), "version", "1.2.2"):
+            with override_settings(MIDDLEWARE=middleware):
+                with self.assertRaisesRegex(ImproperlyConfigured, "before.*BranchRefusalMiddleware"):
+                    branching.register()
+
+
 class ResponseMiddlewareOrderTest(SimpleTestCase):
     def test_gzip_after_refusal_is_rejected_while_loading_the_real_chain(self):
         from django.core.exceptions import ImproperlyConfigured
