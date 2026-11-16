@@ -366,7 +366,8 @@ URL request
   `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
   the module takes a `Family`, or `None` for the Control Agent in `cached()`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
-  `read_identity`, `read_verified`, mutation scopes) never read or fill the cache. `fan_out` pins the settings row for its workers
+  `read_identity`, `read_verified`, mutation scopes) never read or fill the cache. Of these, only a mutation scope rotates a
+  generation, so a read-only path never enters one (OpenGrep `kea-catalogue-mutation-outside-config-write`). `fan_out` pins the settings row for its workers
   (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
   around each test.
 - **`sync.py`**: builds the aggregate Reservation Synchronization State and synchronizes DCIM MAC addresses.

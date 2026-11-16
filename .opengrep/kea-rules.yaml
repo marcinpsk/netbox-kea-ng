@@ -316,6 +316,41 @@ rules:
           metavariable: $METHOD
           regex: ^(reservation_add|reservation_update|reservation_del)$
 
+  - id: kea-catalogue-mutation-outside-config-write
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Production code outside `config_write.py` enters `subnet_catalogue.mutation()`. A mutation scope is for a
+      Configuration Change only: it rotates the configuration generation of the display cache when it opens and
+      when it closes, so each use drops the cached Configuration, Catalogue and Reservation entries of the family.
+      A read-only path never enters a mutation scope. Read through `subnet_catalogue.read_identity()` (one
+      `subnet{v}-list` read) or `subnet_catalogue.read_verified()` (identity and configuration facts). Both use
+      no cache and rotate nothing. Tests may enter a scope. Limits: the rule sees `subnet_catalogue.mutation()`
+      and a `mutation()` imported from `subnet_catalogue`, not an alias or a re-export.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "AGENTS.md: Display cache"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "netbox_kea/config_write.py"
+    pattern-either:
+      - pattern: subnet_catalogue.mutation(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  from .subnet_catalogue import mutation
+                  ...
+              - pattern-inside: |
+                  from ..subnet_catalogue import mutation
+                  ...
+              - pattern-inside: |
+                  from netbox_kea.subnet_catalogue import mutation
+                  ...
+          - pattern: mutation(...)
+
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
     severity: ERROR
