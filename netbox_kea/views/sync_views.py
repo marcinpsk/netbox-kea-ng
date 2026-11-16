@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from django.contrib import messages
 from django.db import DatabaseError
-from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
 from django.shortcuts import render
 from django.urls import reverse
@@ -20,6 +20,7 @@ from .. import (
     ip_parse,
     manual_sync,
     reservation_edit,
+    reservation_reads,
     runtime_change,
     server_configuration,
     subnet_catalogue,
@@ -41,8 +42,8 @@ from ..reservation_transfer import (
     ReservationTransferError,
     parse_reservation_document,
 )
-from ..reservations import ReservationCapabilities
-from ..subnet_catalogue import CatalogueUnavailable, for_synchronization
+from ..reservations import Reservation, ReservationCapabilities
+from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetUnconfirmed, for_synchronization
 from ..sync_permissions import sync_gate
 from ..utilities import (
     LeaseCSVError,
@@ -60,14 +61,14 @@ from ._base import (
 from .leases import LEASES_TAB, lease_sync_gates, show_lease_side_effects
 from .manual_sync_presenter import manual_sync_lines
 from .notices import Notice, failed_load, load_target
-from .reservation_mutations import (
-    RESERVATION_VERIFICATION_FAILED,
-    live_reservation_target,
+from .reservation_mutations import RESERVATION_VERIFICATION_FAILED, show_reservation_side_effects
+from .reservations import (
+    MUTATION_UNCONFIRMED,
+    RESERVATIONS_TAB,
+    reservation_badge,
     reservation_identity_from_request,
     reservation_identity_label,
-    show_reservation_side_effects,
 )
-from .reservations import MUTATION_UNCONFIRMED, RESERVATIONS_TAB, reservation_badge
 from .server_scope import ServerAccessMixin
 from .workspace import FamilyRouteMixin
 
@@ -166,16 +167,18 @@ class ServerReservationSyncView(FamilyRouteMixin, ServerAccessMixin, View):
         identity = reservation_identity_from_request(request, self.dhcp_version)
         if refusal := client_settings_refusal(server, self.dhcp_version):
             return _row_error(request, refusal)
-        try:
-            loaded = load_target(
-                server,
-                "reservation_target",
-                lambda: live_reservation_target(server, self.dhcp_version, subnet_id, identity),
-            )
-        except Http404:
-            return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
+
+        def read() -> tuple[Reservation, CatalogueSnapshot] | Notice | None:
+            try:
+                return reservation_reads.read_sync_target(server, self.dhcp_version, subnet_id, identity)
+            except SubnetUnconfirmed as exc:
+                return failed_load(exc.snapshot)
+
+        loaded = load_target(server, "reservation_target", read)
         if isinstance(loaded, Notice):
             return _row_error(request, loaded.text)
+        if loaded is None:
+            return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
         reservation, catalogue = loaded
         outcome = manual_sync.sync_reservation(server, reservation, catalogue, gate)
         if isinstance(outcome, manual_sync.NotRun):
@@ -428,25 +431,23 @@ class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, View)
             return _ImportRefusal(
                 ((capabilities.explanation if capabilities is not None else "") or MUTATION_UNCONFIRMED,)
             )
-        with subnet_catalogue.mutation(instance, self.dhcp_version) as scope:
-            catalogue = scope.snapshot
-            if catalogue is None:
-                raise TypeError("An entered mutation scope holds its Catalogue.")
-            try:
-                return self._entry_diagnostics(scope, capabilities, proposals)
-            except CatalogueUnavailable:
-                return _ImportRefusal(failed_load(catalogue).lines)
+        try:
+            return self._entry_diagnostics(
+                subnet_catalogue.read_verified(instance, self.dhcp_version), capabilities, proposals
+            )
+        except SubnetUnconfirmed as exc:
+            return _ImportRefusal(failed_load(exc.snapshot).lines)
 
     @staticmethod
     def _entry_diagnostics(
-        scope: subnet_catalogue.MutationScope,
+        lookup: subnet_catalogue.SubnetLookup,
         capabilities: ReservationCapabilities,
         proposals: Sequence[ReservationImportProposal],
     ) -> list[ReservationTransferDiagnostic]:
         """Return a diagnostic for each entry whose Identity type or Subnet the live Server does not have.
 
         Raises:
-            CatalogueUnavailable: If the live Catalogue cannot confirm that a CIDR is absent.
+            SubnetUnconfirmed: If the live Catalogue cannot confirm that a CIDR is absent.
 
         """
         diagnostics: list[ReservationTransferDiagnostic] = []
@@ -459,7 +460,7 @@ class ServerReservationBulkImportView(FamilyRouteMixin, ServerAccessMixin, View)
                         source_position=f"reservations[{index}].identity.type",
                     )
                 )
-            elif scope.find_by_cidr(proposal.subnet_cidr) is None:
+            elif lookup.find_by_cidr(proposal.subnet_cidr) is None:
                 diagnostics.append(
                     ReservationTransferDiagnostic(
                         code="unknown-subnet",

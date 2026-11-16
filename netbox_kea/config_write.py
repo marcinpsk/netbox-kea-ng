@@ -619,7 +619,7 @@ def _reservation_subnet(
         except CatalogueUnavailable as exc:
             raise ChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
         catalogue = scope.snapshot
-    if subnet is None or catalogue is None:
+    if subnet is None:
         raise ChangeRejected(
             "target-changed", (f"{shown} is not in the Subnet list of Kea. Reload the page and try again.",)
         )

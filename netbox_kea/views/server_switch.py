@@ -37,11 +37,9 @@ def _checked_filters(request: HttpRequest, target: Server, section: WorkspaceSec
     show_notices(request, notice(identity.snapshot))
     try:
         subnet = (
-            identity.snapshot.find_by_cidr(search.text)
-            if search.by_cidr
-            else identity.find_by_id(parse_decimal(search.text))
+            identity.find_by_cidr(search.text) if search.by_cidr else identity.find_by_id(parse_decimal(search.text))
         )
-        confirmed = isinstance(subnet, subnet_catalogue.VerifiedSubnet)
+        confirmed = subnet is not None
     except (subnet_catalogue.CatalogueUnavailable, ValueError):
         confirmed = False
     if not confirmed:

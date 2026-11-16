@@ -52,7 +52,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, ownership_link, with_kea_client_config
+from .utils import _make_db_server, ownership_link, read_display_entries, with_kea_client_config
 
 User = get_user_model()
 
@@ -757,6 +757,21 @@ class TestReservation4SyncView(_SyncViewBase):
         ip = NbIP.objects.get(address__net_host="10.0.0.50")
         self.assertContains(response, f'href="{ip.get_absolute_url()}"')
         self.assertNotContains(response, "hx-post")
+
+    def test_a_row_sync_keeps_the_cached_display_entries_of_the_family(self):
+        responses = {
+            **_catalogue_responses(4, 1, "10.0.0.0/24"),
+            "reservation-get": _reservation_get("mock-res.local", "10.0.0.50", **{"hw-address": "aa:bb:cc:00:00:02"}),
+            "reservation-get-page": _res_page([]),
+        }
+        with stub_kea(responses):
+            read_display_entries(self.server, 4)
+            response = self.client.post(self._url())
+        self.assertContains(response, "Synchronized 1/1")
+
+        with stub_kea(responses) as kea:
+            read_display_entries(self.server, 4)
+        self.assertEqual(kea.commands(), [])
 
     def test_returns_400_when_identity_missing(self):
         response = self.client.post(self._url(include_identity=False))

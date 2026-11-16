@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The Reservation reads of the Reservations tabs, the Reservation export and the REST API (ADR 0009)."""
+"""The Reservation reads of the Reservations tabs, the Reservation export, the REST API and the change and Sync targets.
+
+Each read of one Reservation by its identity names the Catalogue that it reads (ADR 0009).
+"""
 
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from .reservations import (
     ReservationScope,
     ReservationSnapshot,
 )
-from .subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
+from .subnet_catalogue import CatalogueSnapshot, SubnetLookup, VerifiedSubnet
 
 #: The number of Reservations in one page that Kea reads for a tab or an export.
 PAGE_SIZE = 100
@@ -275,6 +278,53 @@ def read_by_identity(
     with server.get_client(version=family) as client:
         catalogue = subnet_catalogue.display(server, family)
         return client.reservation_by_identity(family, catalogue, _scope(catalogue, subnet_id), identity)
+
+
+def read_change_target(
+    server: Server, family: Family, subnet_id: int, identity: ReservationIdentity
+) -> Reservation | None:
+    """Read the Reservation to edit or delete: one live ``subnet{v}-list`` read, with no config-get and no cache.
+
+    Return None when the read confirms that the Subnet is absent, or when Kea does not hold the Reservation. A Kea,
+    transport or reply failure raises.
+
+    Raises:
+        SubnetUnconfirmed: If the read cannot confirm the Subnet or its absence.
+        ValueError: If *identity* is not valid for *family*.
+
+    """
+    return _read_target(server, family, subnet_catalogue.read_identity(server, family), subnet_id, identity)
+
+
+def read_sync_target(
+    server: Server, family: Family, subnet_id: int, identity: ReservationIdentity
+) -> tuple[Reservation, CatalogueSnapshot] | None:
+    """Read the Reservation of a row Sync and the live Catalogue, with identity and configuration facts, that it uses.
+
+    The read uses no cache and rotates no generation of it. Return None when the read confirms that the Subnet is
+    absent, or when Kea does not hold the Reservation. A Kea, transport or reply failure raises.
+
+    Raises:
+        SubnetUnconfirmed: If the read cannot confirm the Subnet or its absence.
+        ValueError: If *identity* is not valid for *family*.
+
+    """
+    lookup = subnet_catalogue.read_verified(server, family)
+    reservation = _read_target(server, family, lookup, subnet_id, identity)
+    return None if reservation is None else (reservation, lookup.snapshot)
+
+
+def _read_target(
+    server: Server, family: Family, lookup: SubnetLookup, subnet_id: int, identity: ReservationIdentity
+) -> Reservation | None:
+    """Read the Reservation of *identity* in the Subnet *subnet_id* of *lookup*, or None when either is absent."""
+    subnet = lookup.find_by_id(subnet_id)
+    if subnet is None:
+        return None
+    with server.get_client(version=family) as client:
+        return client.reservation_by_identity(
+            family, lookup.snapshot, InSubnetReservationScope(subnet.identity), identity
+        )
 
 
 def read_by_address(server: Server, family: Family, subnet_id: int, address: str) -> Reservation | None:

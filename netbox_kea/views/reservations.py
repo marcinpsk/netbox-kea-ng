@@ -38,9 +38,11 @@ from ..reservations import (
     LeasePresent,
     Reservation,
     ReservationCapabilities,
+    ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
     UnknownLeasePresence,
+    reservation_identifier_types,
 )
 from ..subnet_catalogue import CatalogueSnapshot
 from ..subnet_catalogue import display as subnet_catalogue
@@ -55,6 +57,27 @@ from .workspace import FamilyRouteMixin
 logger = logging.getLogger(__name__)
 
 MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed."
+
+
+def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
+    """Validate the single Reservation Identity that a view query selects."""
+    types = request.GET.getlist("identifier_type")
+    values = request.GET.getlist("identifier")
+    if len(types) != 1 or len(values) != 1:
+        raise BadRequest("Exactly one identifier_type and one identifier are required.")
+    identifier_type = types[0]
+    identifier = values[0]
+    if identifier_type not in reservation_identifier_types(version) or not identifier:
+        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.")
+    try:
+        return ReservationIdentity(identifier_type, identifier)
+    except ValueError as exc:
+        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
+
+
+def reservation_identity_label(identity: ReservationIdentity) -> str:
+    """Return how a message names the Reservation with *identity*."""
+    return f"{identity.identifier_type} {identity.value}"
 
 
 #: The title of the Lease Unknown badge, for each reason that shows one.
