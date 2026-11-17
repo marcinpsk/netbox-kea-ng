@@ -51,11 +51,12 @@ from .kea_stub import (
     _network_absent,
     _network_present,
     _refused_connection,
+    _res_page,
     _subnet_list,
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, with_kea_client_config
+from .utils import _make_db_server, read_display_entries, with_kea_client_config
 
 _OK = {"result": 0, "text": "ok"}
 _HOOK_NOT_LOADED = (
@@ -693,6 +694,20 @@ class SubnetAndPoolChangeTests(TestCase):
                 self.assertEqual(outcome.application, "unknown")
                 self.assertEqual(outcome.persistence, "persisted")
                 self.assertEqual(outcome.diagnostics[1], "The read after the failure did not succeed.")
+
+    def test_the_pool_check_read_keeps_the_cached_display_entries_of_the_family(self):
+        """The read after a failed Pool command changes nothing; the write command rotated the cache already."""
+        responses = {**_subnet_change(4, _subnet(4)), "reservation-get-page": _res_page([])}
+        with stub_kea(responses) as kea:
+            subnet = subnet_catalogue.read_verified(self.server, 4).find_by_id(1)
+            read_display_entries(self.server, 4)
+            pools = config_write._pools_now(self.server, 4, subnet)
+        self.assertEqual(pools, subnet.configuration.pools)
+        self.assertEqual(kea.commands()[-2:], ["subnet4-list", "config-get"])
+
+        with stub_kea(responses) as kea:
+            read_display_entries(self.server, 4)
+        self.assertEqual(kea.commands(), [])
 
     def test_a_failed_pool_add_whose_subnet_is_gone_is_a_kea_rejection(self):
         failure = {"result": 1, "text": "command failed"}
