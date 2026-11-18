@@ -328,7 +328,8 @@ rules:
       no cache and rotate nothing. Tests may enter a scope. Limits: the rule sees the module and the name through
       absolute imports, one- and two-dot relative imports and their aliases. A function parameter with the bound
       name hides an import above the function, but not an import inside it: a nested function whose parameter has
-      the name of a function-local import is reported, so rename that parameter. The rule does
+      the name of a function-local import is reported, so rename that parameter. A call to a parameter before a
+      function-local import of its name is reported only when a module-level import also binds the name. The rule does
       not see a three-dot relative import (no production module is that deep), an import below its use (ruff E402
       refuses it), a star import, a re-export or an assignment.
     metadata:
@@ -405,6 +406,14 @@ rules:
                     ...
                     from .. import subnet_catalogue
                     ...
+          # The call must come after the import: an earlier call uses the parameter.
+          - pattern-either:
+              - pattern-inside: |
+                  from . import subnet_catalogue
+                  ...
+              - pattern-inside: |
+                  from .. import subnet_catalogue
+                  ...
           - pattern: subnet_catalogue.mutation(...)
       - patterns:
           - pattern-either:
@@ -418,6 +427,13 @@ rules:
                     ...
                     from .. import subnet_catalogue as $M
                     ...
+          - pattern-either:
+              - pattern-inside: |
+                  from . import subnet_catalogue as $M
+                  ...
+              - pattern-inside: |
+                  from .. import subnet_catalogue as $M
+                  ...
           # A parameter of the same name resolves the call to the parameter, so compare the spelling.
           - pattern: $C.mutation(...)
           - metavariable-comparison:
@@ -434,6 +450,13 @@ rules:
                     ...
                     from ..subnet_catalogue import mutation
                     ...
+          - pattern-either:
+              - pattern-inside: |
+                  from .subnet_catalogue import mutation
+                  ...
+              - pattern-inside: |
+                  from ..subnet_catalogue import mutation
+                  ...
           - pattern: mutation(...)
       - patterns:
           - pattern-either:
@@ -447,6 +470,13 @@ rules:
                     ...
                     from ..subnet_catalogue import mutation as $F
                     ...
+          - pattern-either:
+              - pattern-inside: |
+                  from .subnet_catalogue import mutation as $F
+                  ...
+              - pattern-inside: |
+                  from ..subnet_catalogue import mutation as $F
+                  ...
           - pattern: $C(...)
           - metavariable-comparison:
               comparison: str($C) == str($F)
