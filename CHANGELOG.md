@@ -13,6 +13,22 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.15.0 (2026-11-18)
+
+### Bug Fixes
+
+- **opengrep**: Report a nested call after a function-local mutation import
+  ([`b0bc81c`](https://github.com/marcinpsk/netbox-kea-ng/commit/b0bc81c26b88a67137837a8c0ce2155790789a65))
+
+- **opengrep**: Stop reporting a parameter call before a local import of its name
+  ([`69bdb60`](https://github.com/marcinpsk/netbox-kea-ng/commit/69bdb6081f25b2e2bd9b60d77faa878b73f93ffd))
+
+### Chores
+
+- **deps**: Bump soupsieve
+  ([`c09aa21`](https://github.com/marcinpsk/netbox-kea-ng/commit/c09aa211713314137f249899b3b0a57c40d3f47b))
+
+
 ## v3.14.2 (2026-11-15)
 
 ### Bug Fixes
