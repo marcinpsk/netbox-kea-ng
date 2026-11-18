@@ -302,10 +302,11 @@ def read_sync_target(
     """Read the Reservation of a row Sync and the live Catalogue, with identity and configuration facts, that it uses.
 
     The read uses no cache and rotates no generation of it. Return None when the read confirms that the Subnet is
-    absent, or when Kea does not hold the Reservation. A Kea, transport or reply failure raises.
+    absent, or when Kea does not hold the Reservation. A failed ``reservation-get`` raises. A failed ``config-get``
+    does not raise: the returned Catalogue then has ``configuration_available`` False.
 
     Raises:
-        SubnetUnconfirmed: If the read cannot confirm the Subnet or its absence.
+        SubnetUnconfirmed: If the ``subnet{v}-list`` read cannot confirm the Subnet or its absence.
         ValueError: If *identity* is not valid for *family*.
 
     """

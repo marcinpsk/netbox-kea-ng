@@ -231,7 +231,8 @@ URL request
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
   → reservation_reads.py (the Reservation reads: the cached page and search batch of the tabs, the export Snapshot,
                         the REST API reads, and the live Edit, Delete and row Sync targets; a failed read raises,
-                        and the views run it through load_snapshot() or load_target())
+                        and the views run it through load_snapshot() or load_target(); a row Sync target records a
+                        failed config-get in its Catalogue and does not raise)
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)

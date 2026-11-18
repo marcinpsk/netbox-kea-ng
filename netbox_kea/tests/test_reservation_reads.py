@@ -109,3 +109,12 @@ class TestReadSyncTarget(TestCase):
 
         self.assertTrue(raised.exception.snapshot.configuration_available)
         self.assertNotIn("reservation-get", kea.commands())
+
+    def test_a_failed_config_get_returns_the_reservation_with_a_catalogue_that_records_it(self):
+        responses = {**_responses(_res_get(_RECORD)), "config-get": {"result": 1, "text": "busy"}}
+        with stub_kea(responses) as kea, self.assertLogs("netbox_kea", "WARNING"):
+            reservation, catalogue = read_sync_target(self.server, 4, 20, _IDENTITY)
+
+        self.assertEqual(reservation.identity, _IDENTITY)
+        self.assertFalse(catalogue.configuration_available)
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
