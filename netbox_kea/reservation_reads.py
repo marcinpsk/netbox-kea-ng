@@ -27,6 +27,7 @@ from .reservations import (
     ReservationIdentity,
     ReservationScope,
     ReservationSnapshot,
+    reservation_identifier_types,
 )
 from .subnet_catalogue import CatalogueSnapshot, SubnetLookup, VerifiedSubnet
 
@@ -293,6 +294,7 @@ def read_change_target(
         ValueError: If *identity* is not valid for *family*.
 
     """
+    _require_family(family, identity)
     return _read_target(server, family, subnet_catalogue.read_identity(server, family), subnet_id, identity)
 
 
@@ -310,9 +312,16 @@ def read_sync_target(
         ValueError: If *identity* is not valid for *family*.
 
     """
+    _require_family(family, identity)
     lookup = subnet_catalogue.read_verified(server, family)
     reservation = _read_target(server, family, lookup, subnet_id, identity)
     return None if reservation is None else (reservation, lookup.snapshot)
+
+
+def _require_family(family: Family, identity: ReservationIdentity) -> None:
+    """Raise ValueError before any Kea read when *identity* is not valid for *family*."""
+    if identity.identifier_type not in reservation_identifier_types(family):
+        raise ValueError(f"{identity.identifier_type} is not supported for DHCPv{family} Reservations.")
 
 
 def _read_target(

@@ -14,6 +14,7 @@ from .utils import _make_db_server, read_display_entries
 _IDENTITY = ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff")
 _RECORD = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.10", "hostname": "host"}
 _GONE = {"result": 3, "text": "Host not found."}
+_V4_ONLY = ReservationIdentity("circuit-id", "01:02:03")
 
 
 def _responses(reservation: dict) -> dict:
@@ -122,3 +123,17 @@ class TestReadSyncTarget(TestCase):
         self.assertEqual(reservation.identity, _IDENTITY)
         self.assertFalse(catalogue.configuration_available)
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
+
+
+class TestTargetReadIdentityFamily(TestCase):
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def test_an_identity_invalid_for_the_family_raises_before_any_read(self):
+        for reader in (read_change_target, read_sync_target):
+            for name, subnet_id in (("present", 20), ("absent", 21)):
+                with self.subTest(reader=reader.__name__, subnet=name):
+                    with stub_kea(_catalogue_responses(6, 20, "2001:db8::/64")) as kea:
+                        with self.assertRaises(ValueError):
+                            reader(self.server, 6, subnet_id, _V4_ONLY)
+                    self.assertEqual(kea.commands(), [])
