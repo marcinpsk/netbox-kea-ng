@@ -105,7 +105,7 @@ from ._base import (
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, load_snapshot, load_target, notice, show_notices
 from .read_age import read_age_context, refresh_requested
-from .reservations import empty_text
+from .reservations import empty_text, reservation_url
 from .server_scope import ServerAccessMixin
 from .workspace import FamilyRouteMixin
 
@@ -870,18 +870,6 @@ class ServerLeaseAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView
         show_lease_side_effects(request, facts, subject=f"Lease {creation.address}")
 
 
-def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_url: str) -> str | None:
-    if isinstance(reservation.scope, GlobalReservationScope):
-        return None
-    params = {"identifier_type": reservation.identity.identifier_type, "identifier": reservation.identity.value}
-    query = _urlencode({**params, "return_url": return_url} if return_url else params)
-    base = reverse(
-        "plugins:netbox_kea:server_reservation_edit",
-        kwargs={"pk": server_pk, "family": reservation.family, "subnet_id": reservation.scope.subnet.subnet_id},
-    )
-    return f"{base}?{query}"
-
-
 _NO_RESERVATION_FIELDS: dict[str, Any] = {
     "is_reserved": False,
     "host_reservation": False,
@@ -983,7 +971,11 @@ def _link_reservation(
     row: dict[str, Any], reservation: Reservation, server_pk: int, can_change: bool, return_url: str
 ) -> None:
     """Link the Reservation of one Lease row; a Global Reservation has no edit form, so it has no link."""
-    row["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
+    scope = reservation.scope
+    subnet_id = None if isinstance(scope, GlobalReservationScope) else scope.subnet.subnet_id
+    row["reservation_url"] = reservation_url(
+        "edit", server_pk, reservation.family, subnet_id, reservation.identity, return_url
+    )
     row["can_change_reservation"] = can_change and row["reservation_url"] is not None
 
 

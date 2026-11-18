@@ -3,8 +3,8 @@
 """The reservation "Sync all" button with a netbox-branching branch selected, in a real browser.
 
 It runs against the netbox-branching variant of the harness (docker-compose.branching.yml: NetBox
-4.7, netbox-branching 1.2.2, DEBUG off). Without netbox-branching the module skips. The branching
-CI job sets NETBOX_KEA_REQUIRE_BRANCHING=1, and then the module fails instead.
+4.7, the netbox-branching pin in .github/requirements-branching.txt, DEBUG off). Without
+netbox-branching the module skips. The branching CI job sets NETBOX_KEA_REQUIRE_BRANCHING=1, and then the module fails instead.
 
 Kea is live here, so the proof that a refused click changed nothing is by state: the configuration
 hash, reservations and leases of both Kea daemons, and the NetBox IP addresses, are the same before

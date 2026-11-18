@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from django.apps import apps
 from django.conf import settings
@@ -29,11 +29,17 @@ from django.utils.html import escape
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.module_loading import import_string
 from django_htmx.http import HttpResponseClientRedirect, HttpResponseClientRefresh
+from packaging.version import Version
 from rest_framework.permissions import SAFE_METHODS
 from utilities.exceptions import AbortRequest
 
+if TYPE_CHECKING:
+    from netbox.plugins import PluginConfig
+
 APP_LABEL = "netbox_kea"
 BRANCHING_APP_LABEL = "netbox_branching"
+# 1.2.2 refuses an API request that names an unready branch before any view runs.
+REQUIRED_BRANCHING_VERSION = "1.2.2"
 SOURCES_HEADER = "X-NetBox-Kea-Sources"
 # The REST "code" of each refusal.
 BRANCH_WRITE_REFUSED = "branch_write_refused"
@@ -50,7 +56,7 @@ class BranchActive(AbortRequest):
     """
 
     def __init__(self, operation: str, branch: Any) -> None:
-        self.text = f"{operation} is refused. {_refused_text(branch)}"
+        self.text = f"{operation} is refused. {_branch_refused_text(branch)}"
         super().__init__(escape(self.text))
         self.operation = operation
         self.branch = branch
@@ -179,6 +185,7 @@ def register() -> None:
     """Register the resolver with netbox-branching and connect the plugin row receivers, from the plugin's ready()."""
     if not installed():
         return
+    _validate_branching_version()
     _validate_response_middleware()
     from netbox_branching.utilities import register_branching_resolver
 
@@ -399,11 +406,6 @@ _UNUSABLE_TEXT = (
 )
 
 
-def _refused_text(branch: Any) -> str:
-    # netbox-branching before 1.2.2 activates its own 400 response as the branch for an unready API branch header.
-    return _UNUSABLE_TEXT if isinstance(branch, HttpResponse) else _branch_refused_text(branch)
-
-
 def _refusal(request: HttpRequest, text: str, code: str, htmx: Callable[[], HttpResponse]) -> HttpResponse:
     from utilities.api import is_api_request
 
@@ -457,6 +459,15 @@ def refuse_lock_conflict(request: HttpRequest, text: str) -> HttpResponse:
     return HttpResponseClientRedirect(target) if request.htmx else HttpResponseRedirect(target)  # type: ignore[attr-defined]
 
 
+def _validate_branching_version() -> None:
+    plugin: PluginConfig = apps.get_app_config(BRANCHING_APP_LABEL)
+    version = plugin.version
+    if Version(version) < Version(REQUIRED_BRANCHING_VERSION):
+        raise ImproperlyConfigured(
+            f"netbox-kea needs netbox-branching {REQUIRED_BRANCHING_VERSION} or later. Version {version} is installed."
+        )
+
+
 def _validate_response_middleware() -> None:
     if not installed():
         return
@@ -489,7 +500,7 @@ class BranchRefusalMiddleware:
         response = self.get_response(request)
         branch = active_branch()
         match = getattr(request, "resolver_match", None)
-        if branch is None or isinstance(branch, HttpResponse) or match is None:
+        if branch is None or match is None:
             return response
         if plugin_owned(match.func) or match.view_name == "graphql":
             from .dhcp_mapping_lifecycle import mapping_unavailable_reason
@@ -524,12 +535,9 @@ class BranchRefusalMiddleware:
         """Refuse an unsafe method on a plugin-owned callback before the view runs."""
         if not installed() or not plugin_owned(view_func):
             return None
-        branch = active_branch()
-        if isinstance(branch, HttpResponse):
-            # netbox-branching before 1.2.2 activates its own 400 as the branch when an API header names an unready branch.
-            return branch
         if not unsafe_plugin_request(view_func, request.method):
             return None
+        branch = active_branch()
         if branch is not None:
             return refuse_active_branch(request, branch)
         if selection_unusable(request):
@@ -539,8 +547,6 @@ class BranchRefusalMiddleware:
     def process_exception(self, request: HttpRequest, exception: Exception) -> HttpResponse | None:
         """Render BranchActive as the same 409, and a lock error of a coordinated request as the retry refusal."""
         if isinstance(exception, BranchActive):
-            if isinstance(exception.branch, HttpResponse):
-                return exception.branch
             return refuse_active_branch(request, exception.branch)
         from .dhcp_mapping_lifecycle import LOCK_CONFLICT, coordinated_lock_error
 

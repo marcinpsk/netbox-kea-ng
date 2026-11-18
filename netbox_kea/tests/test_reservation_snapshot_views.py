@@ -8,13 +8,16 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
+from django.test import SimpleTestCase
 from django.urls import reverse
 
 from netbox_kea import display_cache, lease_reads, subnet_catalogue
 from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.leases import LeaseQuery
 from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
+from netbox_kea.reservations import ReservationIdentity
 from netbox_kea.views.notices import HEADLINES, Notice
+from netbox_kea.views.reservations import reservation_url
 
 from .kea_stub import (
     READ_FAILURES,
@@ -1358,3 +1361,37 @@ class TestWidenedReservationPage(_ViewTestBase):
             ],
             [],
         )
+
+
+class TestReservationUrl(SimpleTestCase):
+    """One builder gives the Scope and Identity URL of the Edit, Delete and Sync routes of a Reservation."""
+
+    def test_each_route_gives_the_reservation_url_or_none_for_a_global_reservation(self):
+        identity = ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff")
+        selects = "identifier_type=hw-address&identifier=aa%3Abb%3Acc%3Add%3Aee%3Aff"
+        back = "&return_url=%2Fplugins%2Fkea%2Fservers%2F7%2Freservations4%2F%3Fq%3Dhost"
+        cases = (
+            ("edit", 4, 20, None, f"/plugins/kea/servers/7/reservations4/20/edit/?{selects}"),
+            ("delete", 6, 21, None, f"/plugins/kea/servers/7/reservations6/21/delete/?{selects}"),
+            ("sync", 4, 22, None, f"/plugins/kea/servers/7/reservations4/22/sync/?{selects}"),
+            (
+                "edit",
+                4,
+                20,
+                "/plugins/kea/servers/7/reservations4/?q=host",
+                f"/plugins/kea/servers/7/reservations4/20/edit/?{selects}{back}",
+            ),
+            (
+                "delete",
+                4,
+                20,
+                "/plugins/kea/servers/7/reservations4/?q=host",
+                f"/plugins/kea/servers/7/reservations4/20/delete/?{selects}{back}",
+            ),
+            ("edit", 4, 20, "", f"/plugins/kea/servers/7/reservations4/20/edit/?{selects}"),
+            ("edit", 4, None, None, None),
+            ("sync", 6, None, "/plugins/kea/servers/7/reservations6/", None),
+        )
+        for route, family, subnet_id, return_url, expected in cases:
+            with self.subTest(route=route, family=family, subnet_id=subnet_id, return_url=return_url):
+                self.assertEqual(reservation_url(route, 7, family, subnet_id, identity, return_url), expected)

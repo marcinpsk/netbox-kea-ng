@@ -55,6 +55,7 @@ from .subnet_catalogue import (
     VerifiedSubnet,
     mutation,
     read_identity,
+    read_verified,
 )
 
 if TYPE_CHECKING:
@@ -619,7 +620,7 @@ def _reservation_subnet(
         except CatalogueUnavailable as exc:
             raise ChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
         catalogue = scope.snapshot
-    if subnet is None or catalogue is None:
+    if subnet is None:
         raise ChangeRejected(
             "target-changed", (f"{shown} is not in the Subnet list of Kea. Reload the page and try again.",)
         )
@@ -938,15 +939,14 @@ def _not_joined(server: Server, family: Family, subnet_id: int, name: str) -> bo
 
 
 def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[Pool, ...]:
-    """Return the Pools that *subnet* holds now in a fresh scope, and none when its ID is gone.
+    """Return the Pools that *subnet* holds now in a fresh live read, and none when its ID is gone.
 
     Raises:
         CatalogueUnavailable: If the ID now names another network, or Kea did not return the configuration facts
             of the Subnet, so the Pools that the command reached are unknown.
 
     """
-    with mutation(server, family) as scope:
-        current = scope.find_by_id(subnet.subnet_id)
+    current = read_verified(server, family).find_by_id(subnet.subnet_id)
     if current is None:
         return ()
     # The ID now names another network, so this read cannot show the Pools of the Subnet that the command named.
