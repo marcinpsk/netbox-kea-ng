@@ -1662,17 +1662,20 @@ class TestReservationDocumentImport(_ViewTestBase):
         )
 
     def test_a_refused_import_keeps_the_cached_display_entries_of_the_family(self):
-        responses = {
-            **_mutation_responses(4, 21, "198.18.1.0/24", ["hw-address"]),
+        # The cached Catalogue holds the requested Subnet and the live one does not, so a cached check would pass.
+        cached = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
             "reservation-get-page": _res_page([]),
         }
-        with stub_kea(responses) as kea:
+        live = {**_mutation_responses(4, 21, "198.18.1.0/24", ["hw-address"]), "reservation-get-page": _res_page([])}
+        with stub_kea(cached):
             read_display_entries(self.server, 4)
+        with stub_kea(live) as kea:
             response = self.client.post(self._url(), {"format": "yaml", "document": _IMPORT_DOCUMENT})
         self.assertEqual([item.code for item in response.context["result"]["diagnostics"]], ["unknown-subnet"])
         self.assertNotIn("reservation-add", kea.commands())
 
-        with stub_kea(responses) as kea:
+        with stub_kea(cached) as kea:
             read_display_entries(self.server, 4)
         self.assertEqual(kea.commands(), [])
 

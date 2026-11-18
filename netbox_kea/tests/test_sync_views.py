@@ -766,8 +766,10 @@ class TestReservation4SyncView(_SyncViewBase):
         }
         with stub_kea(responses):
             read_display_entries(self.server, 4)
+        with stub_kea(responses) as kea:
             response = self.client.post(self._url())
         self.assertContains(response, "Synchronized 1/1")
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
 
         with stub_kea(responses) as kea:
             read_display_entries(self.server, 4)
