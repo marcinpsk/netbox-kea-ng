@@ -44,6 +44,7 @@ from .kea_stub import stub_kea
 if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
+    from netbox_kea.constants import Family
     from netbox_kea.subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
 
 
@@ -54,6 +55,15 @@ def complete_catalogue(catalogue: "CatalogueSnapshot") -> "CompleteCatalogueSnap
     return CompleteCatalogueSnapshot(
         **{each.name: getattr(catalogue, each.name) for each in dataclasses.fields(catalogue)}
     )
+
+
+def read_display_entries(server: Server, family: "Family") -> None:
+    """Read the cached Configuration, Catalogue and first Reservation page of *family*, as a page render does."""
+    from netbox_kea import reservation_reads, server_configuration, subnet_catalogue
+
+    server_configuration.display(server, family)
+    subnet_catalogue.display(server, family)
+    reservation_reads.cached_page(server, family, reservation_reads.ReservationQuery())
 
 
 def family_url(name: str, family: int, **kwargs) -> str:

@@ -30,6 +30,7 @@ from .utils import (
     _make_db_server,
     _ViewTestBase,
     active_tabs,
+    read_display_entries,
     with_kea_client_config,
     without_dhcp_plugin,
 )
@@ -1659,6 +1660,24 @@ class TestReservationDocumentImport(_ViewTestBase):
                 ("claim", "198.18.0.21"),
             ],
         )
+
+    def test_a_refused_import_keeps_the_cached_display_entries_of_the_family(self):
+        # The cached Catalogue holds the requested Subnet and the live one does not, so a cached check would pass.
+        cached = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-get-page": _res_page([]),
+        }
+        live = {**_mutation_responses(4, 21, "198.18.1.0/24", ["hw-address"]), "reservation-get-page": _res_page([])}
+        with stub_kea(cached):
+            read_display_entries(self.server, 4)
+        with stub_kea(live) as kea:
+            response = self.client.post(self._url(), {"format": "yaml", "document": _IMPORT_DOCUMENT})
+        self.assertEqual([item.code for item in response.context["result"]["diagnostics"]], ["unknown-subnet"])
+        self.assertNotIn("reservation-add", kea.commands())
+
+        with stub_kea(cached) as kea:
+            read_display_entries(self.server, 4)
+        self.assertEqual(kea.commands(), [])
 
     def test_the_import_page_selects_the_reservations_tab(self):
         for version in (4, 6):

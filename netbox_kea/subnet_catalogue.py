@@ -31,6 +31,14 @@ class CatalogueUnavailable(RuntimeError):
     """Raised when a requested operation needs facts the catalogue cannot verify."""
 
 
+class SubnetUnconfirmed(CatalogueUnavailable):
+    """Raised when a Subnet lookup cannot confirm a Subnet or its absence. It holds the Catalogue that it read."""
+
+    def __init__(self, message: str, *, snapshot: CatalogueSnapshot) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot
+
+
 class SubnetIdentityConflict(ValueError):
     """Raised when a proposed Subnet identity already exists."""
 
@@ -872,15 +880,33 @@ def _allocate_subnet_id(used_ids: set[int]) -> int:
     return free
 
 
-class _SubnetLookup:
-    """Exact Subnet lookups on one live snapshot, which a Configuration Change can act on."""
+_NOT_ENTERED = "MutationScope must be entered before use."
 
-    snapshot: CatalogueSnapshot | None
+
+class SubnetLookup:
+    """Exact Subnet lookups on one live Catalogue read, which a check or a Configuration Change can act on."""
+
+    def __init__(self, snapshot: CatalogueSnapshot) -> None:
+        self._snapshot: CatalogueSnapshot | None = snapshot
+
+    @property
+    def snapshot(self) -> CatalogueSnapshot:
+        """Return the live Catalogue of the lookup."""
+        if self._snapshot is None:
+            raise RuntimeError(_NOT_ENTERED)
+        return self._snapshot
 
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
-        snapshot = self._require_snapshot()
-        subnet = snapshot.find_by_id(subnet_id)
+        subnet = self.snapshot.find_by_id(subnet_id)
+        if isinstance(subnet, VerifiedSubnet):
+            return subnet
+        self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
+        return None
+
+    def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
+        """Return one exact Verified Subnet, or confirm its absence safely."""
+        subnet = self.snapshot.find_by_cidr(cidr)
         if isinstance(subnet, VerifiedSubnet):
             return subnet
         self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
@@ -895,52 +921,43 @@ class _SubnetLookup:
         self._require_complete_identity(unknown)
         subnet = self.find_by_id(subnet_id)
         if subnet is not None and not subnet.membership_known:
-            raise CatalogueUnavailable(unknown)
+            raise SubnetUnconfirmed(unknown, snapshot=self.snapshot)
         return subnet
 
-    def _require_snapshot(self) -> CatalogueSnapshot:
-        if self.snapshot is None:
-            raise RuntimeError("MutationScope must be entered before use.")
-        return self.snapshot
-
     def _require_complete_identity(self, message: str) -> None:
-        if not self._require_snapshot().confirms_absence:
-            raise CatalogueUnavailable(message)
+        snapshot = self.snapshot
+        if not snapshot.confirms_absence:
+            raise SubnetUnconfirmed(message, snapshot=snapshot)
 
 
-class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
-    """One live Subnet identity scope for exact lookup and creation preparation."""
+class MutationScope(SubnetLookup, AbstractContextManager["MutationScope"]):
+    """One live Subnet scope of a Configuration Change: exact lookups and creation preparation.
+
+    It rotates the configuration generation of the display cache when it opens and when it closes.
+    """
 
     def __init__(self, server: Server, family: Family) -> None:
         self.server = server
         self.family = family
-        self.snapshot: CatalogueSnapshot | None = None
+        self._snapshot = None
         self._configuration: ServerConfigurationSnapshot | None = None
 
     def __enter__(self) -> MutationScope:
         display_cache.rotate_configuration(self.server, self.family)
-        self.snapshot, self._configuration = _read_live(self.server, self.family)
+        self._snapshot, self._configuration = _read_live(self.server, self.family)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         # Identity facts stop being live confirmation here, so drop them: a caller that
         # keeps the scope must not decide a mutation on pre-mutation observations.
-        self.snapshot = None
+        self._snapshot = None
         self._configuration = None
         display_cache.rotate_configuration(self.server, self.family)
 
-    def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
-        """Return one exact Verified Subnet, or confirm its absence safely."""
-        snapshot = self._require_snapshot()
-        subnet = snapshot.find_by_cidr(cidr)
-        if isinstance(subnet, VerifiedSubnet):
-            return subnet
-        self._require_complete_identity("Subnet absence cannot be confirmed from an incomplete identity observation.")
-        return None
-
     def has_shared_network(self, name: str) -> bool | None:
         """Return whether the configuration read of the scope shows the Shared Network *name*. None: it cannot show it."""
-        self._require_snapshot()
+        if self._snapshot is None:
+            raise RuntimeError(_NOT_ENTERED)
         configuration = self._configuration
         if configuration is not None and any(network.name == name for network in configuration.shared_networks):
             return True
@@ -950,7 +967,7 @@ class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
 
     def prepare_creation(self, cidr: str, subnet_id: int | None = None) -> NewSubnetIdentity:
         """Return a live-confirmed identity that is available for creation."""
-        snapshot = self._require_snapshot()
+        snapshot = self.snapshot
         self._require_complete_identity("New Subnet creation requires a complete live identity observation.")
         network = subnet_network(cidr, self.family)
         if any(subnet.network == network for subnet in snapshot.subnets):
@@ -974,17 +991,8 @@ _CONFIGURATION_NOT_READ = _ConfigurationObservation(
 )
 
 
-class IdentityRead(_SubnetLookup):
-    """One live ``subnet{v}-list`` read: the identity and Shared Network membership of each Subnet."""
-
-    snapshot: CatalogueSnapshot
-
-    def __init__(self, snapshot: CatalogueSnapshot) -> None:
-        self.snapshot = snapshot
-
-
-def read_identity(server: Server, family: int) -> IdentityRead:
-    """Send one ``subnet{v}-list`` read, for a check after a change. It uses no cache and sends no config-get."""
+def read_identity(server: Server, family: int) -> SubnetLookup:
+    """Send one ``subnet{v}-list`` read, for a check. It uses no cache, sends no config-get and rotates nothing."""
     validated_family = validate_family(family)
     require_persisted_server(server)
     with _catalogue_client(server, validated_family) as client:
@@ -993,9 +1001,17 @@ def read_identity(server: Server, family: int) -> IdentityRead:
             if client is None
             else _read_identity(client, validated_family)
         )
-    return IdentityRead(_reconcile(server, validated_family, identity, _CONFIGURATION_NOT_READ, None))
+    return SubnetLookup(_reconcile(server, validated_family, identity, _CONFIGURATION_NOT_READ, None))
+
+
+def read_verified(server: Server, family: int) -> SubnetLookup:
+    """Read the identity and configuration facts live, for a check. It uses no cache and rotates nothing."""
+    return SubnetLookup(for_verification(server, family))
 
 
 def mutation(server: Server, family: int) -> MutationScope:
-    """Open a live mutation scope and invalidate the interactive cache around it."""
+    """Open the live scope of a Configuration Change, which invalidates the display cache when it opens and closes.
+
+    A read-only path never enters a mutation scope: it reads through ``read_identity()`` or ``read_verified()``.
+    """
     return MutationScope(server, validate_family(family))

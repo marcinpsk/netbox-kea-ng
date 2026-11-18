@@ -11,13 +11,13 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, assert_never
+from typing import Any, Literal, assert_never
 from urllib.parse import urlencode
 
 from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
-from django.urls import NoReverseMatch, reverse
+from django.urls import reverse
 from django.utils import timezone
 from netbox.views import generic
 from utilities.views import register_model_view
@@ -38,9 +38,11 @@ from ..reservations import (
     LeasePresent,
     Reservation,
     ReservationCapabilities,
+    ReservationIdentity,
     ReservationSnapshot,
     ReservationSynchronizationState,
     UnknownLeasePresence,
+    reservation_identifier_types,
 )
 from ..subnet_catalogue import CatalogueSnapshot
 from ..subnet_catalogue import display as subnet_catalogue
@@ -55,6 +57,51 @@ from .workspace import FamilyRouteMixin
 logger = logging.getLogger(__name__)
 
 MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed."
+
+
+def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
+    """Validate the single Reservation Identity that a view query selects."""
+    types = request.GET.getlist("identifier_type")
+    values = request.GET.getlist("identifier")
+    if len(types) != 1 or len(values) != 1:
+        raise BadRequest("Exactly one identifier_type and one identifier are required.")
+    identifier_type = types[0]
+    identifier = values[0]
+    if identifier_type not in reservation_identifier_types(version) or not identifier:
+        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.")
+    try:
+        return ReservationIdentity(identifier_type, identifier)
+    except ValueError as exc:
+        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
+
+
+def reservation_identity_label(identity: ReservationIdentity) -> str:
+    """Return how a message names the Reservation with *identity*."""
+    return f"{identity.identifier_type} {identity.value}"
+
+
+def reservation_url(
+    route: Literal["edit", "delete", "sync"],
+    server_pk: int,
+    family: Family,
+    subnet_id: int | None,
+    identity: ReservationIdentity,
+    return_url: str | None = None,
+) -> str | None:
+    """Return the Scope and Identity URL of the Reservation *route*, or None for a Global Reservation (no Subnet ID).
+
+    A *return_url* that is empty or None is left out of the query.
+    """
+    if subnet_id is None:
+        return None
+    params = {"identifier_type": identity.identifier_type, "identifier": identity.value}
+    if return_url:
+        params["return_url"] = return_url
+    base = reverse(
+        f"plugins:netbox_kea:server_reservation_{route}",
+        kwargs={"pk": server_pk, "family": family, "subnet_id": subnet_id},
+    )
+    return f"{base}?{urlencode(params)}"
 
 
 #: The title of the Lease Unknown badge, for each reason that shows one.
@@ -314,22 +361,13 @@ def _attach_reservation_action_urls(
 ) -> None:
     """Attach canonical Scope plus Identity mutation URLs that return to *return_url* to eligible rows."""
     for row in reservations:
-        row["edit_url"] = None
-        row["delete_url"] = None
-        if not can_change or row["scope_kind"] != "in-subnet":
+        row["edit_url"] = row["delete_url"] = None
+        if not can_change:
             continue
-        query = urlencode(
-            {"identifier_type": row["identifier_type"], "identifier": row["identifier"], "return_url": return_url}
-        )
-        try:
-            target = {"pk": server_pk, "family": version, "subnet_id": row["subnet_id"]}
-            edit = reverse("plugins:netbox_kea:server_reservation_edit", kwargs=target)
-            delete = reverse("plugins:netbox_kea:server_reservation_delete", kwargs=target)
-        except NoReverseMatch:
-            logger.debug("No Reservation action URL for Subnet ID %r", row["subnet_id"])
-            continue
-        row["edit_url"] = f"{edit}?{query}"
-        row["delete_url"] = f"{delete}?{query}"
+        identity = row["reservation"].identity
+        subnet_id = row["subnet_id"] if row["scope_kind"] == "in-subnet" else None
+        row["edit_url"] = reservation_url("edit", server_pk, version, subnet_id, identity, return_url)
+        row["delete_url"] = reservation_url("delete", server_pk, version, subnet_id, identity, return_url)
 
 
 _IPAM_HIDDEN = "You may not view an IP address of this Reservation in NetBox."
@@ -371,17 +409,9 @@ def _enrich_reservations_with_badges(
             and state.code in ("not-synchronized", "partially-synchronized")
         ):
             if sync.allowed:
-                query = urlencode(
-                    {
-                        "identifier_type": reservation.identity.identifier_type,
-                        "identifier": reservation.identity.value,
-                    }
+                row["sync_url"] = reservation_url(
+                    "sync", server.pk, version, reservation.scope.subnet.subnet_id, reservation.identity
                 )
-                base = reverse(
-                    "plugins:netbox_kea:server_reservation_sync",
-                    kwargs={"pk": server.pk, "family": version, "subnet_id": reservation.scope.subnet.subnet_id},
-                )
-                row["sync_url"] = f"{base}?{query}"
             else:
                 row["sync_refusal"] = sync.reason
 

@@ -7,14 +7,21 @@ from typing import Any
 from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.core.exceptions import BadRequest
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import config_write, forms, ip_parse, reservation_edit, server_configuration, subnet_catalogue
+from .. import (
+    config_write,
+    forms,
+    ip_parse,
+    reservation_edit,
+    reservation_reads,
+    server_configuration,
+    subnet_catalogue,
+)
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..integrations import dhcp_plugin
@@ -23,14 +30,12 @@ from ..ipam_sources import RESERVATION
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
-    InSubnetReservationScope,
     Reservation,
     ReservationCapabilities,
     ReservationConflict,
     ReservationIdentity,
-    reservation_identifier_types,
 )
-from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
+from ..subnet_catalogue import CatalogueUnavailable, SubnetUnconfirmed
 from ..sync_permissions import sync_gate
 from ..sync_plan import periodic_sync_enabled
 from ._base import (
@@ -41,7 +46,7 @@ from ._base import (
 )
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
-from .reservations import RESERVATIONS_TAB
+from .reservations import RESERVATIONS_TAB, reservation_identity_from_request, reservation_identity_label
 from .server_scope import ServerAccessMixin
 from .workspace import FamilyRouteMixin
 
@@ -112,79 +117,17 @@ def _networks(value: str | None) -> tuple[ipaddress.IPv6Network, ...]:
     return tuple(ip_parse.ipv6_network(item) for item in (value or "").split(",") if item)
 
 
-def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
-    """Validate the single Reservation Identity that a view query selects."""
-    types = request.GET.getlist("identifier_type")
-    values = request.GET.getlist("identifier")
-    if len(types) != 1 or len(values) != 1:
-        raise BadRequest("Exactly one identifier_type and one identifier are required.")
-    identifier_type = types[0]
-    identifier = values[0]
-    if identifier_type not in reservation_identifier_types(version) or not identifier:
-        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.")
+def _change_target(
+    server: Server, version: Family, subnet_id: int, identity: ReservationIdentity
+) -> Reservation | Notice:
+    """Return the live Reservation to edit or delete, or the Catalogue Notice when the read cannot confirm its Subnet."""
     try:
-        return ReservationIdentity(identifier_type, identifier)
-    except ValueError as exc:
-        raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
-
-
-def reservation_identity_label(identity: ReservationIdentity) -> str:
-    """Return how a message names the Reservation with *identity*."""
-    return f"{identity.identifier_type} {identity.value}"
-
-
-def exact_reservation(
-    server: Server,
-    version: Family,
-    subnet: VerifiedSubnet | None,
-    catalogue: CatalogueSnapshot,
-    identity: ReservationIdentity,
-) -> Reservation:
-    """Read one exact Reservation within a verified Subnet."""
-    if subnet is None:
-        raise Http404("Reservation Subnet not found.")
-    scope = InSubnetReservationScope(subnet.identity)
-    with server.get_client(version=version) as client:
-        reservation = client.reservation_by_identity(version, catalogue, scope, identity)
+        reservation = reservation_reads.read_change_target(server, version, subnet_id, identity)
+    except SubnetUnconfirmed as exc:
+        return failed_load(exc.snapshot)
     if reservation is None:
         raise Http404("Reservation not found.")
     return reservation
-
-
-def live_reservation_target(
-    server: Server, version: Family, subnet_id: int, identity: ReservationIdentity
-) -> tuple[Reservation, CatalogueSnapshot] | Notice:
-    """Return one live Reservation and the Catalogue with configuration facts in which its Subnet is verified.
-
-    Return the Catalogue Notice when the live Catalogue cannot confirm the Subnet.
-    """
-    with subnet_catalogue.mutation(server, version) as scope:
-        catalogue = scope.snapshot
-        if catalogue is None:
-            raise TypeError("An entered mutation scope holds its Catalogue.")
-        try:
-            subnet = scope.find_by_id(subnet_id)
-        except CatalogueUnavailable:
-            return failed_load(catalogue)
-    return exact_reservation(server, version, subnet, catalogue, identity), catalogue
-
-
-def _read_reservation_target(
-    server: Server,
-    version: Family,
-    subnet_id: int,
-    identity: ReservationIdentity,
-) -> Reservation | Notice:
-    """Return one live Reservation without invalidating the display snapshots.
-
-    Return the Catalogue Notice when the ``subnet{v}-list`` read cannot confirm the Subnet.
-    """
-    observation = subnet_catalogue.read_identity(server, version)
-    try:
-        subnet = observation.find_by_id(subnet_id)
-    except CatalogueUnavailable:
-        return failed_load(observation.snapshot)
-    return exact_reservation(server, version, subnet, observation.snapshot, identity)
 
 
 def _target_or_redirect(
@@ -197,9 +140,7 @@ def _target_or_redirect(
     *shown: Notice | None,
 ) -> Reservation | HttpResponse:
     """Load the Reservation to change, or show the Notice of the failed load with *shown* and redirect."""
-    loaded = load_target(
-        server, "reservation_target", lambda: _read_reservation_target(server, version, subnet_id, identity)
-    )
+    loaded = load_target(server, "reservation_target", lambda: _change_target(server, version, subnet_id, identity))
     if isinstance(loaded, Notice):
         show_notices(request, loaded, *shown)
         return redirect(return_url)

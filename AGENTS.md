@@ -230,7 +230,9 @@ URL request
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
   → reservation_reads.py (the Reservation reads: the cached page and search batch of the tabs, the export Snapshot,
-                        and the REST API reads; a failed read raises, and the views run it through load_snapshot())
+                        the REST API reads, and the live Edit, Delete and row Sync targets; a failed read raises,
+                        and the views run it through load_snapshot() or load_target(); a row Sync target records a
+                        failed config-get in its Catalogue and does not raise)
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
@@ -365,7 +367,8 @@ URL request
   `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
   the module takes a `Family`, or `None` for the Control Agent in `cached()`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
-  `read_identity`, mutation scopes) never read or fill the cache. `fan_out` pins the settings row for its workers
+  `read_identity`, `read_verified`, mutation scopes) never read or fill the cache. Of these, only a mutation scope rotates a
+  generation, so a read-only path never enters one (OpenGrep `kea-catalogue-mutation-outside-config-write`). `fan_out` pins the settings row for its workers
   (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
   around each test.
 - **`sync.py`**: builds the aggregate Reservation Synchronization State and synchronizes DCIM MAC addresses.
