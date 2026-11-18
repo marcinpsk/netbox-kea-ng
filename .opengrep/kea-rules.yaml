@@ -326,9 +326,10 @@ rules:
       A read-only path never enters a mutation scope. Read through `subnet_catalogue.read_identity()` (one
       `subnet{v}-list` read) or `subnet_catalogue.read_verified()` (identity and configuration facts). Both use
       no cache and rotate nothing. Tests may enter a scope. Limits: the rule sees the module and the name through
-      absolute imports, one- and two-dot relative imports and their aliases, and a function parameter with the
-      bound name hides them. It does not see a three-dot relative import (no production module is that deep), an
-      import below its use (ruff E402 refuses it), a star import, a re-export or an assignment.
+      absolute imports, one- and two-dot relative imports and their aliases. A function parameter with the bound
+      name hides a module-level import, but not an import in that function or in a nested function. The rule does
+      not see a three-dot relative import (no production module is that deep), an import below its use (ruff E402
+      refuses it), a star import, a re-export or an assignment.
     metadata:
       category: correctness
       confidence: HIGH
@@ -390,6 +391,64 @@ rules:
           - pattern-not-inside: |
               def $FN(..., $F, ...):
                 ...
+      # A function that imports the name again uses the import, also inside a function with a parameter of that name.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from . import subnet_catalogue
+                    ...
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from .. import subnet_catalogue
+                    ...
+          - pattern: subnet_catalogue.mutation(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from . import subnet_catalogue as $M
+                    ...
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from .. import subnet_catalogue as $M
+                    ...
+          # A parameter of the same name resolves the call to the parameter, so compare the spelling.
+          - pattern: $C.mutation(...)
+          - metavariable-comparison:
+              comparison: str($C) == str($M)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from .subnet_catalogue import mutation
+                    ...
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from ..subnet_catalogue import mutation
+                    ...
+          - pattern: mutation(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from .subnet_catalogue import mutation as $F
+                    ...
+              - pattern-inside: |
+                  def $G(...):
+                    ...
+                    from ..subnet_catalogue import mutation as $F
+                    ...
+          - pattern: $C(...)
+          - metavariable-comparison:
+              comparison: str($C) == str($F)
 
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
