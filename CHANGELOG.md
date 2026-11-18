@@ -13,6 +13,211 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.14.2 (2026-11-15)
+
+### Bug Fixes
+
+- **dhcp-import**: Import the Reservation record that Kea serves
+  ([`df5466c`](https://github.com/marcinpsk/netbox-kea-ng/commit/df5466c37138e948f76a7008c838b4035edde384))
+
+- **dhcp-import**: Keep the Reservation results of the written store change
+  ([`1616160`](https://github.com/marcinpsk/netbox-kea-ng/commit/1616160b23fa8c971a64872efb70533c49f67984))
+
+- **dhcp-import**: The written store holds the DHCP server and each skipped Option
+  ([`eff41bb`](https://github.com/marcinpsk/netbox-kea-ng/commit/eff41bb293bb8e6f23007651746917315c9c4a16))
+
+- **ipam**: Claim only the Reservation record that Kea serves
+  ([`26cc8f9`](https://github.com/marcinpsk/netbox-kea-ng/commit/26cc8f9f6871231edf4e611053ea955fa2345ae1))
+
+### Chores
+
+- **deps**: Bump pydantic from 2.14.2 to 2.14.3
+  ([`425e5c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/425e5c9205bb12999011f4adf3fd1d5bd7d3001b))
+
+- **deps-dev**: Bump markdown-it-py from 4.2.0 to 4.3.0
+  ([`aa5c57a`](https://github.com/marcinpsk/netbox-kea-ng/commit/aa5c57adfc60ba83283b180cd93a314c46deb894))
+
+- **deps-dev**: Bump playwright from 1.64.1 to 1.65.0
+  ([`8354153`](https://github.com/marcinpsk/netbox-kea-ng/commit/83541539ec39880fa11496e4bbb6197a1215fcb6))
+
+- **deps-dev**: Bump tree-sitter from 0.26.0 to 0.26.1
+  ([`4726c82`](https://github.com/marcinpsk/netbox-kea-ng/commit/4726c82aeba7e9cd827baf909847ca23f6693326))
+
+- **deps-dev**: Bump zensical from 0.0.74 to 0.1.1
+  ([`bb1fd24`](https://github.com/marcinpsk/netbox-kea-ng/commit/bb1fd2410c3552e571cd8603aa0689211df250b1))
+
+### Documentation
+
+- Pin the reverted MAC event of a sync row as an accepted limit
+  ([`1cf5859`](https://github.com/marcinpsk/netbox-kea-ng/commit/1cf585975b9e563f493378b22ec9e0344563061d))
+
+### Refactoring
+
+- **dhcp-import**: One written store per run replaces the mutated hand-offs
+  ([`08b4541`](https://github.com/marcinpsk/netbox-kea-ng/commit/08b4541050511fc4df371e06ac9380baff9705ec))
+
+- **dhcp-import**: The plan names the children of each object
+  ([`1ce0c60`](https://github.com/marcinpsk/netbox-kea-ng/commit/1ce0c60de1275f8b668bcd8fa6a5d44ada835372))
+
+- **ipam**: One address row step for claim and reconcile
+  ([`b56f66b`](https://github.com/marcinpsk/netbox-kea-ng/commit/b56f66b84572ddd6b091578d704aa213e077e9e4))
+
+### Testing
+
+- Provoke the Reservation add row error with a failed IP address write
+  ([`b279d3b`](https://github.com/marcinpsk/netbox-kea-ng/commit/b279d3b2cb31df9ace18cf6dfe6adb4f88cb466f))
+
+- Run the hand-built DHCP Import hand-offs through the import
+  ([`db349c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/db349c94e482a750eac9a08d5acd424c20c1145c))
+
+- **dhcp-import**: Check the served Options after a shadowed record is replaced
+  ([`771d699`](https://github.com/marcinpsk/netbox-kea-ng/commit/771d699c87f68dc9668a7f59c1f76f4cd4376728))
+
+- **ipam**: Run the concurrent Reservation imports through import_server_config
+  ([`8168525`](https://github.com/marcinpsk/netbox-kea-ng/commit/81685250166838460c19c7f8b854dff761bbd226))
+
+- **ipam**: Skip the two concurrent import tests without netbox_dhcp
+  ([`1f875b8`](https://github.com/marcinpsk/netbox-kea-ng/commit/1f875b871f09895e2deed9770e2c7cadc78caaab))
+
+- **sync**: Check the per-row event batch of a bulk sync with two Reservations
+  ([`143e082`](https://github.com/marcinpsk/netbox-kea-ng/commit/143e08216b65f55cf79cded63308eb985bbe7cce))
+
+
+## v3.14.1 (2026-11-12)
+
+### Bug Fixes
+
+- **opengrep**: See a Server permission passed to has_perm() by keyword
+  ([`c576241`](https://github.com/marcinpsk/netbox-kea-ng/commit/c5762414e73f2355bcf17ecd0d90ca68e6e9e303))
+
+- **views**: Apply the refusal rule to every Server route and permitted Server
+  ([`9235f11`](https://github.com/marcinpsk/netbox-kea-ng/commit/9235f110690971f8661c93b9999d0db76fb77141))
+
+- **views**: Keep the disabled-family page off views of the whole Server
+  ([`d535498`](https://github.com/marcinpsk/netbox-kea-ng/commit/d5354987c857f9e7858b9b196a1e83752188b6fd))
+
+- **views**: Refuse every method of the Server switch on a hidden Server
+  ([`f0253c0`](https://github.com/marcinpsk/netbox-kea-ng/commit/f0253c095089c52dffdc249af039688fd9d3f1e0))
+
+### Documentation
+
+- Run Now and the Sync toggle need view and change permission on the Server
+  ([`286f374`](https://github.com/marcinpsk/netbox-kea-ng/commit/286f374fe2a7b5c79dbb5d057a3cbaaf211197ea))
+
+### Refactoring
+
+- Make every private name that another module imports public
+  ([`119fd62`](https://github.com/marcinpsk/netbox-kea-ng/commit/119fd62a71df4803e3baa362d2543066b8b768fe))
+
+- **views**: Drop the login mixin behind the gate and share the writable set
+  ([`528d0db`](https://github.com/marcinpsk/netbox-kea-ng/commit/528d0db4c2bef4e7ed3715a90a432b39c9c88fdc))
+
+- **views**: One Server access gate for every Server view
+  ([`44ded7f`](https://github.com/marcinpsk/netbox-kea-ng/commit/44ded7f29ac92e7d42a5c52cb020f1ef1f48a0c7))
+
+### Testing
+
+- **branching**: Expect no Create Reservation link on the IP page in a branch
+  ([`06b4320`](https://github.com/marcinpsk/netbox-kea-ng/commit/06b4320d2b9d375869bf473edc95a32f0fadd25e))
+
+
+## v3.14.0 (2026-11-12)
+
+### Bug Fixes
+
+- Allow an OpenGrep message code span that ends in a backslash
+  ([`22d57ff`](https://github.com/marcinpsk/netbox-kea-ng/commit/22d57ffbba4401c0f8e531ec550117553dd91f83))
+
+- Exit 0 after the OpenGrep README script writes the table
+  ([`a9ac404`](https://github.com/marcinpsk/netbox-kea-ng/commit/a9ac404a21cb0d290c3ae78f2f68f9a05580b404))
+
+- Leave Server persist_config out of GraphQL, as on the REST API
+  ([`6dbb19d`](https://github.com/marcinpsk/netbox-kea-ng/commit/6dbb19deb26c643409ede3f5a90530253e1e6357))
+
+- Read OpenGrep README code spans and markers as GitHub does
+  ([`9e75a21`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e75a214bbd3a32a553ba2d5d4824639a28e1a51))
+
+### Build System
+
+- Require netaddr 1.3.0 or later, with no upper bound
+  ([`9cefb1e`](https://github.com/marcinpsk/netbox-kea-ng/commit/9cefb1eeac93bb29f1a96633d4b6d17b0f38b21e))
+
+### Documentation
+
+- Say that a failed Option write leaves the import receipt
+  ([`034b2c6`](https://github.com/marcinpsk/netbox-kea-ng/commit/034b2c64f54d1ed6bd84316c29053fa93ef7aaaf))
+
+- Say that the Server API fields leave out persist_config
+  ([`279f0d4`](https://github.com/marcinpsk/netbox-kea-ng/commit/279f0d489037af87cb1ba91fb19f1419f0c7ec04))
+
+- Say when a skipped Reservation leaves the delegated-prefix source incomplete
+  ([`cf31df6`](https://github.com/marcinpsk/netbox-kea-ng/commit/cf31df6e53da160d6a8eddef4a7d22a0bfaa6593))
+
+- Write the OpenGrep README rules table from the ruleset
+  ([`c8e835a`](https://github.com/marcinpsk/netbox-kea-ng/commit/c8e835a01d78430c9f78c1fd4df401e1d27f5de3))
+
+### Features
+
+- Journal and signal a Lease edit, as a Lease add and delete do
+  ([`31a0d75`](https://github.com/marcinpsk/netbox-kea-ng/commit/31a0d7563205481abfe5b5d5b50defb9323038a1))
+
+### Refactoring
+
+- **dhcp-import**: One record of IPAM claim outcomes
+  ([`49bacf7`](https://github.com/marcinpsk/netbox-kea-ng/commit/49bacf71d0a1a1102f87e9fac06f625a8778d547))
+
+### Testing
+
+- Count a twice-claimed delegated Prefix disagreement once
+  ([`188c78d`](https://github.com/marcinpsk/netbox-kea-ng/commit/188c78d3edaf00707b7d2cd2a7139002d5a617d6))
+
+- Narrow the Reservation step of the skipped-Reservation helper for mypy
+  ([`4aa465e`](https://github.com/marcinpsk/netbox-kea-ng/commit/4aa465e58d636480a8563af90939a83ce74d39c4))
+
+
+## v3.13.2 (2026-11-10)
+
+### Chores
+
+- **deps**: Bump netboxlabs-netbox-branching in /.github
+  ([`1241acd`](https://github.com/marcinpsk/netbox-kea-ng/commit/1241acda017da405a13e2f0e5a6484b3f032fad3))
+
+- **deps**: Bump netboxlabs-netbox-branching in /.github
+  ([`2291908`](https://github.com/marcinpsk/netbox-kea-ng/commit/229190874ce7f554640ebb13f62af89268b54f6e))
+
+- **deps**: Bump the github-actions group with 2 updates
+  ([`928f5fe`](https://github.com/marcinpsk/netbox-kea-ng/commit/928f5fe334109f5c6d8eeafe5d2231f2ea05f973))
+
+- **deps-dev**: Bump djangorestframework-stubs from 3.18.0 to 3.18.1
+  ([`4fea983`](https://github.com/marcinpsk/netbox-kea-ng/commit/4fea9831685a3d0212d175b1665bf360a70837f3))
+
+- **deps-dev**: Bump djangorestframework-stubs from 3.18.1 to 3.18.2
+  ([`4b63c20`](https://github.com/marcinpsk/netbox-kea-ng/commit/4b63c20cf098e5926ab0b458fa53a4023234e4b5))
+
+- **deps-dev**: Bump imageio-ffmpeg from 0.7.0 to 0.8.0
+  ([`69b2a2d`](https://github.com/marcinpsk/netbox-kea-ng/commit/69b2a2d4b12922ce59633eac6b379655b71189cf))
+
+- **deps-dev**: Bump imageio-ffmpeg from 0.8.0 to 0.8.1
+  ([`7eb8fd1`](https://github.com/marcinpsk/netbox-kea-ng/commit/7eb8fd1c18e16aee3df61bf7ec9ad8fa4d7f4569))
+
+- **deps-dev**: Bump reuse from 6.2.0 to 6.3.0
+  ([`9e6f15e`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e6f15e1bbde0999c72174cea16928af20003d6b))
+
+- **deps-dev**: Bump types-pyyaml
+  ([`9292e27`](https://github.com/marcinpsk/netbox-kea-ng/commit/9292e27b017912f94a9b31110f8574da1c121f69))
+
+- **deps-dev**: Bump types-pyyaml
+  ([`50d84aa`](https://github.com/marcinpsk/netbox-kea-ng/commit/50d84aa9efe094a724e0e10344c08dd511ef69fa))
+
+- **deps-dev**: Bump zensical from 0.0.69 to 0.0.74
+  ([`e385368`](https://github.com/marcinpsk/netbox-kea-ng/commit/e385368818f6936180527d97898b337b26c7bd7c))
+
+### Testing
+
+- Match the netbox-branching 1.2.2 unready-branch refusal
+  ([`d3d14c3`](https://github.com/marcinpsk/netbox-kea-ng/commit/d3d14c3d7ab9879dd98e8e8b150730e23114391e))
+
+
 ## v3.13.1 (2026-11-05)
 
 ### Bug Fixes
