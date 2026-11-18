@@ -701,9 +701,10 @@ class SubnetAndPoolChangeTests(TestCase):
         with stub_kea(responses) as kea:
             subnet = subnet_catalogue.read_verified(self.server, 4).find_by_id(1)
             read_display_entries(self.server, 4)
+            before = len(kea.commands())
             pools = config_write._pools_now(self.server, 4, subnet)
         self.assertEqual(pools, subnet.configuration.pools)
-        self.assertEqual(kea.commands()[-2:], ["subnet4-list", "config-get"])
+        self.assertEqual(kea.commands()[before:], ["subnet4-list", "config-get"])
 
         with stub_kea(responses) as kea:
             read_display_entries(self.server, 4)

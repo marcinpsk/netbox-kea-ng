@@ -86,14 +86,18 @@ class TestReadSyncTarget(TestCase):
         self.assertEqual(catalogue.find_by_id(20).identity, reservation.scope.subnet)
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
 
-    def test_it_keeps_the_cached_display_entries(self):
+    def test_it_reads_live_and_keeps_the_cached_display_entries(self):
         responses = _responses(_res_get(_RECORD))
         with stub_kea(responses):
             read_display_entries(self.server, 4)
-            read_sync_target(self.server, 4, 20, _IDENTITY)
+        live = {**_responses(_res_get(_RECORD)), **_catalogue_responses(4, 20, "198.18.0.0/24", config_hash="live")}
+        with stub_kea(live) as kea:
+            _reservation, catalogue = read_sync_target(self.server, 4, 20, _IDENTITY)
+
+        self.assertEqual(catalogue.configuration_hash, "live")
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "reservation-get"])
         with stub_kea(responses) as kea:
             read_display_entries(self.server, 4)
-
         self.assertEqual(kea.commands(), [])
 
     def test_absence_is_none(self):
