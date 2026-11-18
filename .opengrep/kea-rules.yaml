@@ -327,9 +327,9 @@ rules:
       `subnet{v}-list` read) or `subnet_catalogue.read_verified()` (identity and configuration facts). Both use
       no cache and rotate nothing. Tests may enter a scope. Limits: the rule sees the module and the name through
       absolute imports, one- and two-dot relative imports and their aliases. A function parameter with the bound
-      name hides a module-level import, but not an import in that function or in a nested function. The rule does
-      not see a three-dot relative import (no production module is that deep), an import below its use (ruff E402
-      refuses it), a star import, a re-export or an assignment.
+      name hides an import above the function, but not an import inside the function or a nested function. The
+      rule does not see a three-dot relative import (no production module is that deep), an import below its use
+      (ruff E402 refuses it), a star import, a re-export or an assignment.
     metadata:
       category: correctness
       confidence: HIGH
@@ -392,6 +392,7 @@ rules:
               def $FN(..., $F, ...):
                 ...
       # A function that imports the name again uses the import, also inside a function with a parameter of that name.
+      # A nested function with a parameter of that name, below the import, uses its parameter.
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -405,6 +406,20 @@ rules:
                     from .. import subnet_catalogue
                     ...
           - pattern: subnet_catalogue.mutation(...)
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from . import subnet_catalogue
+                ...
+                def $H(..., subnet_catalogue, ...):
+                  ...
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from .. import subnet_catalogue
+                ...
+                def $H(..., subnet_catalogue, ...):
+                  ...
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -421,6 +436,20 @@ rules:
           - pattern: $C.mutation(...)
           - metavariable-comparison:
               comparison: str($C) == str($M)
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from . import subnet_catalogue as $M
+                ...
+                def $H(..., $C, ...):
+                  ...
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from .. import subnet_catalogue as $M
+                ...
+                def $H(..., $C, ...):
+                  ...
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -434,6 +463,20 @@ rules:
                     from ..subnet_catalogue import mutation
                     ...
           - pattern: mutation(...)
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from .subnet_catalogue import mutation
+                ...
+                def $H(..., mutation, ...):
+                  ...
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from ..subnet_catalogue import mutation
+                ...
+                def $H(..., mutation, ...):
+                  ...
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -449,6 +492,20 @@ rules:
           - pattern: $C(...)
           - metavariable-comparison:
               comparison: str($C) == str($F)
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from .subnet_catalogue import mutation as $F
+                ...
+                def $H(..., $C, ...):
+                  ...
+          - pattern-not-inside: |
+              def $G(...):
+                ...
+                from ..subnet_catalogue import mutation as $F
+                ...
+                def $H(..., $C, ...):
+                  ...
 
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
