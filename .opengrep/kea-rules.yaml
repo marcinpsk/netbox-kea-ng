@@ -326,8 +326,9 @@ rules:
       A read-only path never enters a mutation scope. Read through `subnet_catalogue.read_identity()` (one
       `subnet{v}-list` read) or `subnet_catalogue.read_verified()` (identity and configuration facts). Both use
       no cache and rotate nothing. Tests may enter a scope. Limits: the rule sees the module and the name through
-      absolute imports, one- and two-dot relative imports and their aliases, not through a
-      three-dot relative import (no production module is that deep), a star import, a re-export or an assignment.
+      absolute imports, one- and two-dot relative imports and their aliases, and a function parameter with the
+      bound name hides them. It does not see a three-dot relative import (no production module is that deep), an
+      import below its use (ruff E402 refuses it), a star import, a re-export or an assignment.
     metadata:
       category: correctness
       confidence: HIGH
@@ -338,31 +339,35 @@ rules:
         - "**/tests/**"
         - "netbox_kea/config_write.py"
     pattern-either:
-      - pattern: subnet_catalogue.mutation(...)
-      # Absolute imports resolve, also through an alias of the module or of the name.
+      # opengrep resolves absolute imports and their aliases to the qualified name, and skips a parameter.
       - pattern: netbox_kea.subnet_catalogue.mutation(...)
+      # opengrep cannot name a relative module in a pattern, so each relative import form is explicit.
       - patterns:
-          - pattern-inside: |
-              from $REL import subnet_catalogue as $M
-              ...
+          - pattern-either:
+              - pattern-inside: |
+                  from . import subnet_catalogue
+                  ...
+              - pattern-inside: |
+                  from .. import subnet_catalogue
+                  ...
+          - pattern: subnet_catalogue.mutation(...)
+          - pattern-not-inside: |
+              def $FN(..., subnet_catalogue, ...):
+                ...
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  from . import subnet_catalogue as $M
+                  ...
+              - pattern-inside: |
+                  from .. import subnet_catalogue as $M
+                  ...
           - pattern: $M.mutation(...)
+          - pattern-not-inside: |
+              def $FN(..., $M, ...):
+                ...
       - patterns:
           - pattern-either:
-              - pattern-inside: |
-                  from $REL.subnet_catalogue import mutation as $F
-                  ...
-              - pattern-inside: |
-                  from .subnet_catalogue import mutation as $F
-                  ...
-              - pattern-inside: |
-                  from ..subnet_catalogue import mutation as $F
-                  ...
-          - pattern: $F(...)
-      - patterns:
-          - pattern-either:
-              - pattern-inside: |
-                  from $REL.subnet_catalogue import mutation
-                  ...
               - pattern-inside: |
                   from .subnet_catalogue import mutation
                   ...
@@ -370,6 +375,21 @@ rules:
                   from ..subnet_catalogue import mutation
                   ...
           - pattern: mutation(...)
+          - pattern-not-inside: |
+              def $FN(..., mutation, ...):
+                ...
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  from .subnet_catalogue import mutation as $F
+                  ...
+              - pattern-inside: |
+                  from ..subnet_catalogue import mutation as $F
+                  ...
+          - pattern: $F(...)
+          - pattern-not-inside: |
+              def $FN(..., $F, ...):
+                ...
 
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
