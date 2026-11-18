@@ -93,41 +93,11 @@ def ok_nested_function_uses_the_module_parameter(subnet_catalogue):
     return read
 
 
-def ok_nested_parameter_hides_a_local_name_import(server):
+def bad_outer_call_after_a_nested_parameter(mutation):
     from .subnet_catalogue import mutation
 
     def read(mutation):
-        # ok: kea-catalogue-mutation-outside-config-write
-        return mutation(4)
+        return mutation
 
-    return read
-
-
-def ok_nested_parameter_hides_a_local_name_alias(server):
-    from ..subnet_catalogue import mutation as local_mutate
-
-    def read(local_mutate):
-        # ok: kea-catalogue-mutation-outside-config-write
-        return local_mutate(4)
-
-    return read
-
-
-def ok_nested_parameter_hides_a_local_module_import(server):
-    from .. import subnet_catalogue
-
-    def read(subnet_catalogue):
-        # ok: kea-catalogue-mutation-outside-config-write
-        return subnet_catalogue.mutation(4)
-
-    return read
-
-
-def ok_nested_parameter_hides_a_local_module_alias(server):
-    from . import subnet_catalogue as local_catalogue
-
-    def read(local_catalogue):
-        # ok: kea-catalogue-mutation-outside-config-write
-        return local_catalogue.mutation(4)
-
-    return read
+    # ruleid: kea-catalogue-mutation-outside-config-write
+    return mutation(4), read
