@@ -414,6 +414,16 @@ rules:
               - pattern-inside: |
                   from .. import subnet_catalogue
                   ...
+              # A nested function can run after the import, so it uses the imported name.
+              - patterns:
+                  - pattern-inside: |
+                      def $G(...):
+                        ...
+                        def $H(...):
+                          ...
+                  - pattern-inside: |
+                      def $H(...):
+                        ...
           - pattern: subnet_catalogue.mutation(...)
       - patterns:
           - pattern-either:
@@ -434,6 +444,16 @@ rules:
               - pattern-inside: |
                   from .. import subnet_catalogue as $M
                   ...
+              # A nested function can run after the import, so it uses the imported name.
+              - patterns:
+                  - pattern-inside: |
+                      def $G(...):
+                        ...
+                        def $H(...):
+                          ...
+                  - pattern-inside: |
+                      def $H(...):
+                        ...
           # A parameter of the same name resolves the call to the parameter, so compare the spelling.
           - pattern: $C.mutation(...)
           - metavariable-comparison:
@@ -457,6 +477,16 @@ rules:
               - pattern-inside: |
                   from ..subnet_catalogue import mutation
                   ...
+              # A nested function can run after the import, so it uses the imported name.
+              - patterns:
+                  - pattern-inside: |
+                      def $G(...):
+                        ...
+                        def $H(...):
+                          ...
+                  - pattern-inside: |
+                      def $H(...):
+                        ...
           - pattern: mutation(...)
       - patterns:
           - pattern-either:
@@ -477,6 +507,16 @@ rules:
               - pattern-inside: |
                   from ..subnet_catalogue import mutation as $F
                   ...
+              # A nested function can run after the import, so it uses the imported name.
+              - patterns:
+                  - pattern-inside: |
+                      def $G(...):
+                        ...
+                        def $H(...):
+                          ...
+                  - pattern-inside: |
+                      def $H(...):
+                        ...
           - pattern: $C(...)
           - metavariable-comparison:
               comparison: str($C) == str($F)
