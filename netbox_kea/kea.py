@@ -22,6 +22,7 @@ from urllib3.exceptions import SSLError as Urllib3SSLError
 from . import constants, ip_parse
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .dhcp_options import (
+    DHCPOption,
     DHCPOptionEdit,
     OptionDefinition,
     merge_option_edit,
@@ -652,6 +653,21 @@ class CandidateConfiguration:
 
     def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, edit: DHCPOptionEdit) -> None:
         """Merge the typed option *edit* into the Subnet with *subnet_id*, only while that ID names *network*."""
+        entry, options, definitions = self._subnet_options(subnet_id, network)
+        entry["option-data"] = merge_option_edit(edit, options, self.family, definitions)
+
+    def subnet_options(self, subnet_id: int, network: IPNetworkValue) -> tuple[DHCPOption, ...]:
+        """Return the DHCP Options of the Subnet with *subnet_id*, with the checks of ``set_subnet_options``.
+
+        It changes nothing.
+        """
+        _entry, options, _definitions = self._subnet_options(subnet_id, network)
+        return parse_dhcp_options(options)
+
+    def _subnet_options(
+        self, subnet_id: int, network: IPNetworkValue
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], tuple[OptionDefinition, ...]]:
+        """Return the entry of the Subnet that *subnet_id* and *network* name, its option-data and the definitions."""
         subnet_key = f"subnet{self.family}"
         subnets = list(_config_entries(self._daemon, subnet_key, self.service))
         for shared_network in _config_entries(self._daemon, "shared-networks", self.service):
@@ -667,9 +683,7 @@ class CandidateConfiguration:
             raise MalformedConfiguration(f"config-get returned Subnet {subnet_id} without a valid CIDR.") from exc
         if declared != network:
             raise CandidateTargetMissing
-        matches[0]["option-data"] = merge_option_edit(
-            edit, _config_options(matches[0], self.service), self.family, self._option_definitions()
-        )
+        return matches[0], _config_options(matches[0], self.service), self._option_definitions()
 
     def _option_definitions(self) -> tuple[OptionDefinition, ...]:
         """Read the identity fields of the custom definitions from this live candidate."""

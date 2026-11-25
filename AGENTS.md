@@ -526,11 +526,18 @@ A view runs it through `run_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
 delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
-outside `run_change` and `run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
+outside `run_change`, `run_change_loop` and `run_prepare`. A second rule keeps those functions in `views/_base.py`, and a third
 refuses a broad `except` around a direct `config_write` or `runtime_change` call in a view. Only `config_write` operations take the per-daemon advisory
 lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.
+Each of these operations has a prepare read next to it (`prepare_edit_subnet`, `prepare_delete_subnet`,
+`prepare_add_pool`, `prepare_delete_pool`, `prepare_subnet_options`). It reads Kea live through `read_verified()`,
+rotates nothing, and runs the guard of the write (`_subnet_as_seen`). The options read also runs the candidate checks
+of `set_subnet_options` (`CandidateConfiguration.subnet_options`) and sends no `config-test` or `config-set`. The GET of the page runs it through
+`run_prepare`, and a refusal sends the operator back to the Subnets list with the reason that the write gives. The
+form hints (the Shared Network choices, the inherited options, the displayed Pools of the overlap check) stay display
+data. `test_subnet_change_pages.py` keeps each page and its write together.
 
 Reservation add, edit and delete are Configuration Changes too (ADR 0012): `add_reservation`, `edit_reservation`
 and `delete_reservation` hold the lock from the `MutationScope` read to the end of the persist step and return a
@@ -596,7 +603,10 @@ and Shared Networks, so a test can script a Kea failure or a change by another w
 Subnet edit (`edit_subnet`) removes the Subnet from its Shared Network, adds it to the new one,
 and then updates the fields, because Kea refuses to add a Subnet that is already in a Shared
 Network. It also takes the Shared Network that the page showed, and sends nothing while the
-scope shows another one; a page that could not confirm the membership cannot save. When a step
+scope shows another one; the page does not open when it cannot confirm the membership, or when its display
+configuration cannot list the Shared Networks (`forms.NETWORKS_NOT_LOADED`, also the refusal of a save without the
+list). Without the list the selector is not disabled: it offers only the choice that the form holds, so a save posts
+it. When a step
 does not apply, the operation undoes the applied membership steps, newest first, each only while
 a fresh `subnet{v}-list` read shows the membership that the step set. The field update is the last step, so a
 rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.

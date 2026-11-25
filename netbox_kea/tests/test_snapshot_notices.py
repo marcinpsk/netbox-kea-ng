@@ -11,6 +11,7 @@ from django.contrib.messages import get_messages
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
+from netbox_kea.forms import NETWORKS_NOT_LOADED
 from netbox_kea.kea import KeaException, LeaseQueryPreflightUnavailable, kea_error_message
 from netbox_kea.leases import parse_lease_query
 from netbox_kea.server_configuration import Diagnostic
@@ -240,16 +241,16 @@ class TestOneServerReadsSeveralSnapshots(_ViewTestBase):
 
 
 class TestSubnetEditNotices(_ViewTestBase):
-    """The Subnet edit page reads the Subnet Catalogue and the Server Configuration of one Server."""
+    """The Subnet edit page reads its form hints from the display configuration, and needs its Shared Network list."""
 
-    def test_an_unavailable_catalogue_next_to_an_available_configuration_is_an_error(self):
+    def test_an_unavailable_display_configuration_is_an_error_next_to_the_refusal(self):
         subnet = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
         with stub_kea(
             {
-                "subnet4-list": requests.ConnectionError("identity unavailable"),
-                # The Catalogue reads the configuration first and fails; the page then reads it live.
-                "config-get": queued(requests.ConnectionError("configuration unavailable"), _config4(subnet)),
-                "stat-lease4-get": {"result": 2, "text": "unknown command"},
+                "subnet4-list": _subnet_list(4, [{**subnet, "shared-network-name": None}]),
+                "subnet4-get": {"result": 0, "arguments": {"subnet4": [subnet]}},
+                # The prepare read gets the configuration; the display read of the hints fails.
+                "config-get": queued(_config4(subnet), requests.ConnectionError("configuration unavailable")),
             }
         ):
             response = self.client.get(
@@ -257,9 +258,9 @@ class TestSubnetEditNotices(_ViewTestBase):
                     "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
                 )
             )
-        self.assertEqual(response.status_code, 200)
-        self.assertIn((django_messages.ERROR, _IDENTITY_UNAVAILABLE), _page_messages(response))
-        self.assertNotIn((django_messages.WARNING, _IDENTITY_UNAVAILABLE), _page_messages(response))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn((django_messages.ERROR, NETWORKS_NOT_LOADED), _page_messages(response))
+        self.assertIn((django_messages.ERROR, HEADLINES["configuration"]), _page_messages(response))
 
 
 class TestStatusPageNotices(_ViewTestBase):
@@ -485,20 +486,13 @@ class TestNoticeGapsFromReview(_ViewTestBase):
                 self.assertContains(response, '<div id="list-notice"></div>', html=True)
                 self.assertIn((django_messages.ERROR, HEADLINES[kind]), _page_messages(response))
 
-    def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
-        urls = (
-            reverse(
-                "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
-            ),
-            reverse(
-                "plugins:netbox_kea:server_subnet_pool_delete",
-                kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1, "pool": "198.18.0.10-198.18.0.20"},
-            ),
+    def test_the_pool_add_form_shown_again_warns_about_an_incomplete_catalogue(self):
+        """The overlap check reads the displayed Pools, so the form shown again names the Catalogue it read."""
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
         )
-        for url in urls:
-            with self.subTest(url=url):
-                display_cache.rotate_configuration(self.server, 4)
-                with stub_kea(_IDENTITY_ONLY):
-                    response = self.client.get(url)
-                self.assertEqual(response.status_code, 200)
-                self.assertIn((django_messages.WARNING, _CONFIGURATION_UNAVAILABLE), _page_messages(response))
+        display_cache.rotate_configuration(self.server, 4)
+        with stub_kea(_IDENTITY_ONLY):
+            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "pool": "nonsense"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn((django_messages.WARNING, _CONFIGURATION_UNAVAILABLE), _page_messages(response))

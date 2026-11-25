@@ -562,23 +562,6 @@ def _parse_configured_fact(
     )
 
 
-def subnet_for_display(server: Server, family: int, subnet_id: int) -> DeclaredSubnet | None:
-    """Read one Subnet for form display without authorizing a mutation."""
-    validated_family = validate_family(family)
-
-    def subnet_get() -> dict:
-        with server.get_client(version=validated_family) as client:
-            return client.subnet_get(validated_family, subnet_id)
-
-    entry = attempt(f"The DHCPv{family} Subnet display read of Server {server.pk}", subnet_get)
-    if isinstance(entry, ReadFailure):
-        return None
-    subnet = _complete_subnet(entry, validated_family)
-    if subnet is None or subnet.declared_subnet_id != subnet_id:
-        return None
-    return subnet
-
-
 def _complete_subnet(entry: Any, family: Family) -> DeclaredSubnet | None:
     """Parse one ``subnet{v}-get`` entry. Return None when a fact of the entry is not valid."""
     diagnostics: list[Diagnostic] = []

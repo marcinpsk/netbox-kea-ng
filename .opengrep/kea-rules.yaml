@@ -642,10 +642,11 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not catch `ChangeRejected` in a view. Run the change through `run_change()`, or a loop of changes
-      through `run_change_loop()`, in `views/_base.py`. They are the one place that turns a Configuration
-      Change or Runtime Change outcome or rejection into a message (ADR 0005, ADR 0011). A second handler
-      gives the same rejection a different message. The rule exempts a function by these two names.
+      Do not catch `ChangeRejected` in a view. Run the change through `run_change()`, a loop of changes
+      through `run_change_loop()`, or the prepare read of a change page through `run_prepare()`, in
+      `views/_base.py`. They are the one place that turns a Configuration Change or Runtime Change outcome
+      or rejection into a message (ADR 0005, ADR 0011). A second handler gives the same rejection a
+      different message. The rule exempts a function by these three names.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -684,13 +685,16 @@ rules:
       - pattern-not-inside: |
           def run_change_loop(...):
               ...
+      - pattern-not-inside: |
+          def run_prepare(...):
+              ...
       - focus-metavariable: $EXC
 
   - id: kea-change-mapper-outside-base
     languages: [python]
     severity: ERROR
     message: >-
-      Define `run_change` and `run_change_loop` only in `views/_base.py`. The rule
+      Define `run_change`, `run_change_loop` and `run_prepare` only in `views/_base.py`. The rule
       `kea-change-rejection-caught-outside-mapper` exempts a function by these names, so a second definition
       in another view would hide its catch of `ChangeRejected`.
     metadata:
@@ -710,6 +714,9 @@ rules:
               ...
       - pattern: |
           def run_change_loop(...):
+              ...
+      - pattern: |
+          def run_prepare(...):
               ...
 
   - id: kea-change-in-broad-except

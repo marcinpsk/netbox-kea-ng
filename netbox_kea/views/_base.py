@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseTable)
 OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome | RuntimeChangeOutcome)
 RowT = TypeVar("RowT")
+TargetT = TypeVar("TargetT")
 
 
 class NetBoxRequest(HttpRequest):
@@ -177,6 +178,18 @@ def run_change(
     return outcome
 
 
+def run_prepare(request: HttpRequest, prepare: Callable[[], TargetT]) -> TargetT | None:
+    """Run the prepare read of a change page, and return its target. After a refusal, show its reason and return None.
+
+    The page shows the reason that the write gives for the same refusal, without the lead-in of the write message.
+    """
+    try:
+        return prepare()
+    except ChangeRejected as rejection:
+        _rejection_message(rejection, lead_in=False).show(request)
+        return None
+
+
 @dataclass(frozen=True)
 class ChangeMessage:
     """The message of a change that Kea did not apply or did not confirm. *warning* False shows it as an error."""
@@ -237,9 +250,10 @@ def run_change_loop(
     return loop
 
 
-def _rejection_message(rejection: ChangeRejected) -> ChangeMessage:
+def _rejection_message(rejection: ChangeRejected, *, lead_in: bool = True) -> ChangeMessage:
+    parts = (_REJECTED[rejection.reason], *rejection.diagnostics) if lead_in else rejection.diagnostics
+    text = " ".join(parts)
     # Another writer changed the target, so nothing is wrong with the request or the Server.
-    text = " ".join((_REJECTED[rejection.reason], *rejection.diagnostics))
     return ChangeMessage(text, warning=rejection.reason == "target-changed")
 
 

@@ -19,7 +19,6 @@ from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
 from . import constants, ip_parse
-from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, OptionRow, address_list, parse_dhcp_option
@@ -1156,7 +1155,7 @@ class SubnetConfirmForm(forms.Form):
 
 
 class PoolAddForm(forms.Form):
-    """Form for adding a DHCP pool to an existing Verified Subnet."""
+    """Form for adding a DHCP pool to an existing Subnet. The write checks the Subnet itself."""
 
     # Not required: a missing value is a non-field error in clean(), which the page shows.
     subnet_cidr = forms.CharField(required=False, widget=forms.HiddenInput)
@@ -1166,47 +1165,47 @@ class PoolAddForm(forms.Form):
         max_length=255,
     )
 
-    def __init__(self, *args: Any, subnet: VerifiedSubnet | None, absence_confirmed: bool, **kwargs: Any) -> None:
-        """Keep the Verified Subnet that the Pool must fit, and whether a missing Subnet is absent from Kea."""
+    def __init__(self, *args: Any, family: Family, shown: VerifiedSubnet | None, **kwargs: Any) -> None:
+        """Keep the family of the Subnet, and the displayed Subnet whose Pools the overlap check reads."""
         super().__init__(*args, **kwargs)
-        self.subnet = subnet
-        self.absence_confirmed = absence_confirmed
+        self.family = family
+        self.shown = shown
 
     def clean(self) -> dict[str, Any]:
-        """Require the Subnet that the page showed, then parse the Pool inside it."""
+        """Parse the Pool inside the Subnet that the page showed."""
         cleaned = self.cleaned_data
-        subnet = self._subnet_as_seen(cleaned.get("subnet_cidr", ""))
+        network = _seen_network(cleaned.get("subnet_cidr", ""), self.family)
         if "pool" in cleaned:
             try:
-                cleaned["pool"] = self._pool_in(subnet, cleaned["pool"])
+                cleaned["pool"] = self._pool_in(network, cleaned["pool"])
             except forms.ValidationError as exc:
                 self.add_error("pool", exc)
         return cleaned
 
-    def _subnet_as_seen(self, cidr: str) -> VerifiedSubnet:
-        if self.subnet is None:
-            if self.absence_confirmed:
-                raise forms.ValidationError(
-                    "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
-                )
-            raise forms.ValidationError(SUBNET_LIST_UNCONFIRMED)
-        if _seen_network(cidr, self.subnet.network.version) != self.subnet.network:
-            raise forms.ValidationError(subnet_changed(self.subnet.subnet_id, cidr))
-        return self.subnet
-
-    @staticmethod
-    def _pool_in(subnet: VerifiedSubnet, text: str) -> Pool:
-        """Parse the Pool inside *subnet* and reject an overlap with an existing Pool."""
+    def _pool_in(self, network: IPNetworkValue, text: str) -> Pool:
+        """Parse the Pool inside *network* and reject an overlap with an existing Pool."""
         try:
-            pool = parse_pool(text, subnet.network)
+            pool = parse_pool(text, network)
         except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
-        # Without configuration facts the existing Pools are unknown, so Kea decides.
-        existing = subnet.configuration.pools if subnet.configuration is not None else ()
+        # Without configuration facts of this network the existing Pools are unknown, so Kea decides.
+        shown = self.shown
+        existing = (
+            shown.configuration.pools
+            if shown is not None and shown.network == network and shown.configuration is not None
+            else ()
+        )
         overlapping = next((other for other in existing if other.overlaps(pool)), None)
         if overlapping is not None:
             raise forms.ValidationError(f"Pool {pool.range} overlaps existing Pool {overlapping.range}.")
         return pool
+
+
+# A page without the Shared Network list cannot offer a choice, so neither the edit page nor a save goes on.
+NETWORKS_NOT_LOADED = (
+    "NetBox could not load the Shared Networks from Kea, so the Subnet form cannot be saved. "
+    "Reload the page and try again."
+)
 
 
 class _SubnetBaseForm(forms.Form):
@@ -1220,7 +1219,7 @@ class _SubnetBaseForm(forms.Form):
 
     # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
     shared_network = forms.CharField(label="Shared Network", widget=forms.Select, required=False, strip=False)
-    # False: the page could not load the Shared Networks, so its disabled select posts no name.
+    # False: the page could not load the Shared Networks, so its select offers only the held name.
     shared_networks_complete = forms.BooleanField(widget=forms.HiddenInput, required=False)
     pools = _PoolLinesField(
         label="Pools",
@@ -1270,11 +1269,7 @@ class _SubnetBaseForm(forms.Form):
         """Refuse a page without the Shared Network list, and match gateway, DNS and NTP servers to the family."""
         cleaned = super().clean()
         if not self.cleaned_data.get("shared_networks_complete"):
-            self.add_error(
-                None,
-                "NetBox could not load the Shared Networks from Kea when it showed the page. "
-                "Reload the page and try again.",
-            )
+            self.add_error(None, NETWORKS_NOT_LOADED)
         if not cleaned:
             return cleaned
         subnet_str = cleaned.get(self.subnet_field, "")
@@ -1450,13 +1445,10 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     # The Shared Network of the Subnet when the page loaded, as Kea names it; blank means none. Not a shown_ copy of
     # shared_network: edit_subnet checks the membership on its own, before the field values.
     original_network = forms.CharField(widget=forms.HiddenInput, required=False, strip=False)
-    # False: the page could not confirm the Shared Network, so the form cannot be saved.
-    original_network_confirmed = forms.BooleanField(widget=forms.HiddenInput, required=False)
 
     field_order = [
         "subnet_cidr",
         "original_network",
-        "original_network_confirmed",
         "shared_networks_complete",
         "shared_network",
         "pools",
@@ -1503,16 +1495,6 @@ class SubnetEditForm(_ShownValuesForm[SubnetEdit], _SubnetBaseForm):
     def clean_subnet_cidr(self) -> str:
         """Accept host bits here: Kea allows them, so this CIDR is echoed back from its config."""
         return _validate_subnet_cidr(self.cleaned_data["subnet_cidr"], strict=False)
-
-    def clean(self) -> dict[str, Any] | None:
-        """Refuse a page that could not confirm the Shared Network, because a save would guess the membership."""
-        cleaned = super().clean()
-        if not self.cleaned_data.get("original_network_confirmed"):
-            raise forms.ValidationError(
-                "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
-                "Reload the page and try again."
-            )
-        return cleaned
 
 
 # ─────────────────────────────────────────────────────────────────────────────
