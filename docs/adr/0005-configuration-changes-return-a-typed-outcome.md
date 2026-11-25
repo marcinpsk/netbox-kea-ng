@@ -109,6 +109,15 @@ mutation rules of ADR 0001.
 - `add_pool` and `delete_pool` take the same ID and CIDR pair, and a typed `Pool`. The Verified Subnet supplies
   the CIDR for the delta commands, so the separate `subnet-get` lookup goes.
 
+_Amended 2026-11-25 (#317): each of these operations that has a form also has a prepare read next to it in
+`config_write`: `prepare_edit_subnet`, `prepare_delete_subnet`, `prepare_add_pool`, `prepare_delete_pool` and
+`prepare_subnet_options`. The prepare read reads the Kea sources of its write live through `read_verified()`, and the
+edit read also reads the `subnet{v}-get` entry that the stale-value check of `edit_subnet` reads. It uses no cache and
+rotates nothing. It calls the guard of its write and raises the same `ChangeRejected`. The write keeps its check under
+the lock. A page whose write would be refused does not open: the GET runs the prepare read through `run_prepare` in
+`views/_base.py`, which sends the operator to the Subnets list with the reason that the write gives. The form hints
+stay display data. A Subnet ID that no Subnet has gives a text without a CIDR, because the page has not shown one._
+
 One Pool parser exists: the one in `pools`. The forms use it. A Pool outside its Subnet, or a Pool
 that overlaps an existing Pool of the Verified Subnet, is a form error. When the configuration facts of the
 Subnet are missing, the overlap check does not run, and Kea decides. A Reservation address inside a Pool stays a
