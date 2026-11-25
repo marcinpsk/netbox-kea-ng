@@ -491,6 +491,11 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
         target = run_prepare(request, lambda: config_write.prepare_edit_subnet(server, self.dhcp_version, subnet_id))
         if target is None:
             return redirect(safe_return_url(request, self._subnets_url(pk)))
+        configuration = server_configuration.display(server, self.dhcp_version)
+        show_notices(request, notice(configuration))
+        if not configuration.shared_networks_complete:
+            messages.error(request, forms.NETWORKS_NOT_LOADED)
+            return redirect(safe_return_url(request, self._subnets_url(pk)))
         network = target.shared_network or ""
         initial = {
             "subnet_cidr": target.cidr,
@@ -499,7 +504,7 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
             "original_network": network,
         }
         form = forms.SubnetEditForm(initial=initial)
-        return self._render(request, server, subnet_id, target.cidr, form, network, initial)
+        return self._render(request, server, subnet_id, target.cidr, form, network, initial, configuration)
 
     def _render(
         self,
@@ -510,10 +515,9 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
         form: forms.SubnetEditForm,
         network: str,
         values: dict[str, Any],
+        configuration: server_configuration.ServerConfigurationSnapshot,
     ) -> HttpResponse:
-        """Show the form with the Shared Networks and the option hints of the cached configuration."""
-        configuration = server_configuration.display(server, self.dhcp_version)
-        show_notices(request, notice(configuration))
+        """Show the form with the Shared Networks and the option hints of the cached *configuration*."""
         _offer_networks(request, form, configuration)
         inherited_options = (
             _inherited_subnet_options(configuration, network, values) if configuration.shared_networks_complete else {}
@@ -541,7 +545,15 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
         form: forms.SubnetEditForm,
     ) -> HttpResponse:
         """Show the submitted form again."""
+        if "shared_network" not in form.data:
+            # A disabled selector posted no name, so the form shown again keeps the Shared Network of the page.
+            data = QueryDict(mutable=True)
+            data.update(form.data)
+            data["shared_network"] = form.data.get("original_network", "")
+            form.data = data
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
+        configuration = server_configuration.display(server, self.dhcp_version)
+        show_notices(request, notice(configuration))
         return self._render(
             request,
             server,
@@ -550,6 +562,7 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
             form,
             form.data.get("shared_network", ""),
             submitted,
+            configuration,
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:

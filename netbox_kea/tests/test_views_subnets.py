@@ -34,7 +34,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
-from .. import config_write
+from .. import config_write, forms
 from ..change_outcome import READ_UNUSABLE
 from ..constants import Family
 from ..dhcp_options import ShownOption
@@ -1201,15 +1201,15 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertEqual(inherited["dns_servers"]["value"], "8.8.8.8")
         self.assertEqual(inherited["dns_servers"]["source"], "global")
 
-    def test_inherited_subnet_options_empty_when_kea_config_fails(self):
-        """Subnet facts prefill the form without unavailable inherited options."""
+    def test_a_failed_display_configuration_refuses_the_page(self):
+        """Without the display configuration the page has no Shared Network list, so it does not open."""
         responses = _edit_responses(4, _SUBNET4_GET_FULL[0], _CONFIG4_NO_NETWORKS[0])
         # The prepare read gets the configuration; the display read of the hints fails.
         responses["config-get"] = queued(responses["config-get"], {"result": 1, "text": "err"})
         with stub_kea(responses):
             response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["inherited_options"], {})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(forms.NETWORKS_NOT_LOADED, [str(m) for m in get_messages(response.wsgi_request)])
 
     def test_inherited_subnet_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
@@ -1559,7 +1559,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
 
 
 class TestSubnetEditWithoutTheServerConfiguration(_ViewTestBase):
-    """The edit form shows the subnet4-get entry, so it opens when only the Subnet list confirms the membership."""
+    """The edit form shows the subnet4-get entry. Its prepare read passes when the Subnet list confirms the membership."""
 
     # Kea 3.2.0 names the Shared Network of each Subnet in the list, null for none.
     _LISTED = {"subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24", "shared-network-name": None}])}
@@ -1616,8 +1616,8 @@ class TestSubnetEditWithoutTheServerConfiguration(_ViewTestBase):
         self.assertEqual([str(m) for m in get_messages(response.wsgi_request)], [config_write.SUBNET_LIST_UNCONFIRMED])
         self.assertNotIn("subnet4-get", kea.commands())
 
-    def test_get_opens_when_the_configuration_is_unusable(self):
-        """The Subnet list confirms the membership, so the form opens with the subnet4-get values and no hints."""
+    def test_get_does_not_open_when_the_configuration_is_unusable(self):
+        """The Subnet list confirms the membership, but the page has no Shared Network list, so it does not open."""
         for name, config in (
             ("none arguments", {"result": 0, "arguments": None, "text": "no config"}),
             ("refused", {"result": 1, "text": "error"}),
@@ -1630,10 +1630,8 @@ class TestSubnetEditWithoutTheServerConfiguration(_ViewTestBase):
             ):
                 self._fresh_client()
                 response = self.client.get(self._url())
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
-                self.assertEqual(response.context["form"].initial["original_network"], "")
-                self.assertEqual(response.context["inherited_options"], {})
+                self.assertEqual(response.status_code, 302)
+                self.assertIn(forms.NETWORKS_NOT_LOADED, [str(m) for m in get_messages(response.wsgi_request)])
 
 
 # ---------------------------------------------------------------------------
@@ -1959,9 +1957,7 @@ _SUBNET_ADD_POST = {
     "shared_networks_complete": "True",
 }
 # The Shared Network list of the page was incomplete, so the page cannot choose a Shared Network.
-_NETWORKS_NOT_LOADED = (
-    "NetBox could not load the Shared Networks from Kea when it showed the page. Reload the page and try again."
-)
+_NETWORKS_NOT_LOADED = forms.NETWORKS_NOT_LOADED
 _BLANK_NETWORK = "Enter a Shared Network name, or choose none."
 
 
@@ -2622,9 +2618,8 @@ class TestSubnetEditMessages(_ViewTestBase):
     def test_the_subnet_list_confirms_the_membership_when_the_configuration_read_fails(self):
         """The page opens only on a confirmed membership, so it shows the Shared Network that the Subnet list names."""
         daemon = self._daemon()
-        failed = {"result": 1, "text": "config-get failed"}
-        # The prepare read and the display read of the GET get no configuration.
-        daemon.script("config-get", failed, failed)
+        # The prepare read gets no configuration; the display read of the hints does.
+        daemon.script("config-get", {"result": 1, "text": "config-get failed"})
         url = reverse(
             "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
         )
@@ -2637,16 +2632,22 @@ class TestSubnetEditMessages(_ViewTestBase):
     def test_a_page_without_the_shared_network_list_sends_nothing(self):
         daemon = self._daemon()
         member = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
-        # The two configuration reads of the GET return an incomplete Shared Network list.
-        daemon.script("config-get", _incomplete_networks(member), _incomplete_networks(member))
+        # The configuration reads return an incomplete Shared Network list.
+        daemon.script("config-get", *(_incomplete_networks(member),) * 4)
         url = reverse(
             "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
         )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
-            self.assertEqual(page.context["form"].initial["original_network"], "alpha")
-            data = {**_page_data(page), "valid_lft": "7200"}
-            data.pop("shared_network")
+            self.assertEqual(page.status_code, 302)
+            self.assertIn(_NETWORKS_NOT_LOADED, [str(m) for m in get_messages(page.wsgi_request)])
+            # A page that a disabled selector left without a name: the save is refused too.
+            data = {
+                "subnet_cidr": "10.0.0.0/24",
+                **_shown("alpha"),
+                "shared_networks_complete": "",
+                "valid_lft": "7200",
+            }
             response = self.client.post(url, data)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _NETWORKS_NOT_LOADED)
@@ -3423,10 +3424,10 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
 
 
 class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
-    """The edit GET offers a named Shared Network when another entry has no name."""
+    """A Shared Network without a name makes the list incomplete."""
 
-    def test_unnamed_network_leaves_no_choice(self):
-        """A Shared Network without a name makes the list incomplete, so the page offers no Shared Network."""
+    def test_unnamed_network_refuses_the_edit_page(self):
+        """The page cannot offer the Shared Networks, so it does not open."""
         config_resp = {
             "result": 0,
             "arguments": {
@@ -3448,10 +3449,8 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
         )
         with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["form"].fields["shared_network"].disabled)
-        self.assertNotContains(response, "valid-net")
-        self.assertContains(response, "Could not load shared networks from Kea. Retry later.")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(_NETWORKS_NOT_LOADED, [str(m) for m in get_messages(response.wsgi_request)])
 
 
 # ---------------------------------------------------------------------------
@@ -3594,17 +3593,17 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             "config-write": {"result": 0},
         }
 
-    def _assert_unreadable_shared_networks_hide_hints(self, networks):
+    def _assert_unreadable_shared_networks_refuse_the_page(self, networks):
         url = reverse(
             "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
         )
         with stub_kea(self._shared_network_responses(networks)):
             response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["inherited_options"], {})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(_NETWORKS_NOT_LOADED, [str(m) for m in get_messages(response.wsgi_request)])
 
-    def test_null_shared_network_hides_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints([None])
+    def test_null_shared_network_refuses_the_page(self):
+        self._assert_unreadable_shared_networks_refuse_the_page([None])
 
     def _assert_duplicate_ids_refuse_the_page(self, networks):
         """Duplicate Subnet IDs make the Catalogue inconsistent, so the write refuses and the page does not open."""
@@ -3637,8 +3636,8 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ]
         )
 
-    def test_null_shared_network_subnet_hides_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints([{"name": "clients", "subnet4": [None]}])
+    def test_null_shared_network_subnet_refuses_the_page(self):
+        self._assert_unreadable_shared_networks_refuse_the_page([{"name": "clients", "subnet4": [None]}])
 
     def test_invalid_shared_network_member_pool_preserves_unrelated_operations(self):
         responses = self._shared_network_responses(
@@ -3685,13 +3684,13 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
                 messages = list(get_messages(response.wsgi_request))
                 self.assertEqual(sum(message.level == django_messages.SUCCESS for message in messages), 1)
 
-    def test_missing_shared_network_subnet_id_hides_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints(
+    def test_missing_shared_network_subnet_id_refuses_the_page(self):
+        self._assert_unreadable_shared_networks_refuse_the_page(
             [{"name": "clients", "subnet4": [{"subnet": "198.18.1.0/24"}]}]
         )
 
-    def test_non_scalar_shared_network_subnet_id_hides_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints(
+    def test_non_scalar_shared_network_subnet_id_refuses_the_page(self):
+        self._assert_unreadable_shared_networks_refuse_the_page(
             [{"name": "clients", "subnet4": [{"id": [], "subnet": "198.18.1.0/24"}]}]
         )
 
@@ -3711,16 +3710,8 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         self.assertIn("subnet4-update", kea.commands())
         self.assertIn("network4-subnet-add", kea.commands())
 
-    def test_invalid_shared_networks_preserves_edit_display(self):
-        url = reverse(
-            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
-        )
-        responses = self._shared_network_responses("invalid")
-        with stub_kea(responses):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["form"].initial["subnet_cidr"], "198.18.0.0/24")
-        self.assertEqual(response.context["inherited_options"], {})
+    def test_invalid_shared_networks_refuse_the_page(self):
+        self._assert_unreadable_shared_networks_refuse_the_page("invalid")
 
 
 # ---------------------------------------------------------------------------

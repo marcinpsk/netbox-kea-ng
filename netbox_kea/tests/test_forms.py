@@ -12,6 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea.forms import (
+    NETWORKS_NOT_LOADED,
     Leases4SearchForm,
     Leases6SearchForm,
     LeaseSelectionField,
@@ -1292,12 +1293,7 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
                 self.assertFalse(form.is_valid())
                 self.assertEqual(
                     form.non_field_errors(),
-                    [
-                        (
-                            "NetBox could not load the Shared Networks from Kea when it showed the page. "
-                            "Reload the page and try again."
-                        )
-                    ],
+                    [NETWORKS_NOT_LOADED],
                 )
 
 

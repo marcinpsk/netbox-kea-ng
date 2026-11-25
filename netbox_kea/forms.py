@@ -1201,6 +1201,13 @@ class PoolAddForm(forms.Form):
         return pool
 
 
+# The Shared Network selector of a page without the list posts no name, so neither the page nor its save goes on.
+NETWORKS_NOT_LOADED = (
+    "NetBox could not load the Shared Networks from Kea, so the Subnet form cannot be saved. "
+    "Reload the page and try again."
+)
+
+
 class _SubnetBaseForm(forms.Form):
     """Shared fields and validators for subnet add and edit forms.
 
@@ -1262,11 +1269,7 @@ class _SubnetBaseForm(forms.Form):
         """Refuse a page without the Shared Network list, and match gateway, DNS and NTP servers to the family."""
         cleaned = super().clean()
         if not self.cleaned_data.get("shared_networks_complete"):
-            self.add_error(
-                None,
-                "NetBox could not load the Shared Networks from Kea when it showed the page. "
-                "Reload the page and try again.",
-            )
+            self.add_error(None, NETWORKS_NOT_LOADED)
         if not cleaned:
             return cleaned
         subnet_str = cleaned.get(self.subnet_field, "")

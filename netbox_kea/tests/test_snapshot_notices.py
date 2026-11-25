@@ -11,6 +11,7 @@ from django.contrib.messages import get_messages
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
+from netbox_kea.forms import NETWORKS_NOT_LOADED
 from netbox_kea.kea import KeaException, LeaseQueryPreflightUnavailable, kea_error_message
 from netbox_kea.leases import parse_lease_query
 from netbox_kea.server_configuration import Diagnostic
@@ -240,9 +241,9 @@ class TestOneServerReadsSeveralSnapshots(_ViewTestBase):
 
 
 class TestSubnetEditNotices(_ViewTestBase):
-    """The Subnet edit page opens after its prepare read, and reads its form hints from the display configuration."""
+    """The Subnet edit page reads its form hints from the display configuration, and needs its Shared Network list."""
 
-    def test_an_unavailable_display_configuration_next_to_a_page_that_opens_is_an_error(self):
+    def test_an_unavailable_display_configuration_is_an_error_next_to_the_refusal(self):
         subnet = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
         with stub_kea(
             {
@@ -257,7 +258,8 @@ class TestSubnetEditNotices(_ViewTestBase):
                     "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
                 )
             )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn((django_messages.ERROR, NETWORKS_NOT_LOADED), _page_messages(response))
         self.assertIn((django_messages.ERROR, HEADLINES["configuration"]), _page_messages(response))
 
 

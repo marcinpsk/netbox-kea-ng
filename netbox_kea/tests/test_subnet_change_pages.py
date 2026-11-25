@@ -18,7 +18,7 @@ from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.read_failure import client_settings_message
 
 from .kea_stub import SubnetDaemon, _subnet_list, stub_kea
-from .utils import _make_db_server, _ViewTestBase, invalid_server_settings
+from .utils import _make_db_server, _page_data, _ViewTestBase, invalid_server_settings
 
 _SEEN = "10.0.0.0/24"
 _POOL = "10.0.0.10-10.0.0.20"
@@ -298,3 +298,53 @@ class TestChangePageOpenRotatesNothing(_PageClient):
             subnet_catalogue.display(self.server, 4)
             server_configuration.display(self.server, 4)
         self.assertEqual(kea.commands(), [])
+
+
+_NETWORKS_NOT_LOADED = (
+    "NetBox could not load the Shared Networks from Kea, so the Subnet form cannot be saved. "
+    "Reload the page and try again."
+)
+
+
+class TestEditPageNeedsTheSharedNetworkList(_PageClient):
+    """A selector that the page cannot fill would post no Shared Network, so the edit page does not open without it."""
+
+    _FAILED = {"result": 1, "text": "config-get failed"}
+
+    @staticmethod
+    def _daemon() -> SubnetDaemon:
+        # The Subnet list names the Shared Network 'alpha' of Subnet 1, so the prepare read confirms the membership.
+        return SubnetDaemon(4, [_subnet()], networks=("alpha", "beta"), members={1: "alpha"})
+
+    def test_the_get_does_not_open_when_the_display_configuration_has_no_shared_network_list(self):
+        daemon = self._daemon()
+        daemon.script("config-get", self._FAILED, self._FAILED)
+        response, kea = self._get(_EDIT, daemon.responses())
+        self.assertRedirects(response, self._subnets_url(), fetch_redirect_response=False)
+        self.assertIn(_NETWORKS_NOT_LOADED, self._errors(response))
+        self.assertIn("subnet4-get", kea.commands())
+
+    def test_a_save_without_the_selector_never_takes_the_subnet_out_of_its_shared_network(self):
+        """A save without the selector is refused, and the form shown again keeps the Shared Network of the page."""
+        daemon = self._daemon()
+        url = _EDIT.url(self.server.pk)
+        with stub_kea(daemon.responses()) as kea:
+            page = self.client.get(url)
+            self.assertEqual(page.context["form"].initial["shared_network"], "alpha")
+            # A selector that the page showed disabled posts nothing, so the form says the list did not load.
+            data = {**_page_data(page), "shared_networks_complete": ""}
+            data.pop("shared_network")
+            refused = self.client.post(url, data)
+            self.assertEqual(refused.status_code, 200)
+            self.assertContains(refused, _NETWORKS_NOT_LOADED)
+            self.assertNotIn("subnet4-update", kea.commands())
+            # The display configuration is back, and the operator saves the form shown again.
+            selected = BeautifulSoup(refused.content, "html.parser").select_one(
+                "select[name=shared_network] option[selected]"
+            )
+            self.assertEqual(selected["value"], "alpha")
+            retried = self.client.post(url, _page_data(refused))
+        self.assertEqual(retried.status_code, 302)
+        self.assertIn("subnet4-update", kea.commands())
+        self.assertNotIn("network4-subnet-del", kea.commands())
+        self.assertEqual(daemon.members, {1: "alpha"})
