@@ -525,9 +525,11 @@ class SubnetAndPoolChangeTests(TestCase):
                             with self.assertRaises(ChangeRejected) as raised:
                                 operation()
                         self.assertEqual(raised.exception.reason, "not-sent")
+                        # A gone ID names no CIDR, so the page that cannot open gives the same text.
+                        shown = f" ({_SEEN[version]})" if state is not None else ""
                         self.assertEqual(
                             raised.exception.diagnostics,
-                            (f"Subnet 1 ({_SEEN[version]}) changed in Kea. Reload the page and try again.",),
+                            (f"Subnet 1{shown} changed in Kea. Reload the page and try again.",),
                         )
                         self.assertEqual(kea.commands(), [f"subnet{version}-list", "config-get"])
 
@@ -1552,15 +1554,16 @@ class SubnetEditTests(TestCase):
 
     def test_an_id_and_cidr_pair_that_names_no_verified_subnet_sends_nothing(self):
         for version in _FAMILIES:
-            changed = f"Subnet 20 ({_EDITED[version]}) changed in Kea. Reload the page and try again."
-            for label, subnets in (
-                ("another CIDR", [{**_LIVE[version], "subnet": _ELSEWHERE[version]}]),
-                ("absent", []),
+            for label, subnets, shown in (
+                ("another CIDR", [{**_LIVE[version], "subnet": _ELSEWHERE[version]}], f" ({_EDITED[version]})"),
+                ("absent", [], ""),
             ):
                 with self.subTest(version=version, state=label):
                     rejection, kea = self._rejection(self._daemon(version, None, subnets), "lab")
                     self.assertEqual(rejection.reason, "not-sent")
-                    self.assertEqual(rejection.diagnostics, (changed,))
+                    self.assertEqual(
+                        rejection.diagnostics, (f"Subnet 20{shown} changed in Kea. Reload the page and try again.",)
+                    )
                     self.assertEqual(kea.commands(), _scope(version))
 
     def test_a_subnet_list_that_cannot_confirm_the_membership_sends_nothing(self):

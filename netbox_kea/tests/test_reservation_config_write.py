@@ -100,6 +100,7 @@ def _verified() -> VerifiedSubnet:
         identity=SubnetIdentity(subnet_id=20, network=ip_network(_CIDR)),
         declared_cidr=_CIDR,
         configuration=None,
+        configuration_complete=False,
         shared_network=None,
         membership_known=True,
         qualifying_suffix=None,

@@ -33,12 +33,19 @@ from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from netbox_kea import display_cache
+from netbox_kea import config_write, display_cache
 from netbox_kea.models import Server
+from netbox_kea.read_failure import client_settings_message
 from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses_for_subnets, _subnet_list, stub_kea
-from .utils import _grant, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase, with_kea_client_config
+from .utils import (
+    _grant,
+    _make_db_server,
+    _ReadModifyWriteMessages,
+    _ViewTestBase,
+    with_kea_client_config,
+)
 
 # ---------------------------------------------------------------------------
 # config-get fixtures (read by the read-modify-write mutations and GET prefill)
@@ -96,6 +103,10 @@ _OPTION_DEF_LIST_EMPTY: list = []
 # ---------------------------------------------------------------------------
 
 _CONFIG_OK = {"result": 0}
+_NO_SUBNET_CMDS = (
+    "NetBox could not confirm Kea's Subnet list, because the subnet_cmds hook library is not loaded, so it did not "
+    "send the change."
+)
 _PERSIST = ["config-get", "config-test", "config-write"]
 
 
@@ -240,16 +251,7 @@ class TestSubnetOptionsView(_ViewTestBase):
         self.assertEqual(
             response.url, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         )
-        self.assertIn(
-            (
-                django_messages.ERROR,
-                (
-                    "Kea did not confirm the identity of Subnet 42, because the subnet_cmds hook is not loaded. "
-                    "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity."
-                ),
-            ),
-            self._messages(response),
-        )
+        self.assertEqual(self._messages(response), [(django_messages.ERROR, _NO_SUBNET_CMDS)])
 
     def test_post_without_the_subnet_cmds_hook_is_rejected_before_config_set(self):
         responses = {"subnet4-list": {"result": 2, "text": "'subnet4-list' command not supported."}}
@@ -258,16 +260,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
         self._assert_redirect_to_integer_pk(response)
         self.assertEqual(
-            self._messages(response),
-            [
-                (
-                    django_messages.ERROR,
-                    (
-                        "The change was not sent to Kea. NetBox could not confirm Kea's Subnet list, so it did not "
-                        "send the change. Try again later."
-                    ),
-                )
-            ],
+            self._messages(response), [(django_messages.ERROR, f"The change was not sent to Kea. {_NO_SUBNET_CMDS}")]
         )
         self.assertNotIn("config-set", kea.commands())
 
@@ -301,12 +294,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
-        self.assertIn("Kea configuration facts are unavailable.", texts)
-        self.assertIn(
-            "Kea did not confirm the identity of Subnet 42. "
-            "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity.",
-            texts,
-        )
+        self.assertEqual(texts, [config_write.SUBNET_LIST_UNCONFIRMED])
 
     def test_post_runs_the_read_modify_write_on_the_verified_subnet(self):
         """POST opens the Subnet scope, then runs the read-modify-write and redirects."""
@@ -355,10 +343,9 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_post_for_a_subnet_that_changed_asks_for_a_reload(self):
         """Subnet 42 now names another network, or is gone, so the change reaches no Subnet."""
-        reload = (
-            "The change was not sent to Kea. Subnet 42 (10.0.0.0/24) changed in Kea. Reload the page and try again."
-        )
         for cidr in ("10.0.9.0/24", None):
+            shown = " (10.0.0.0/24)" if cidr is not None else ""
+            reload = f"The change was not sent to Kea. Subnet 42{shown} changed in Kea. Reload the page and try again."
             with self.subTest(cidr=cidr):
                 self._fresh_client()
                 subnets = [] if cidr is None else [{**_SUBNET4, "subnet": cidr}]
@@ -1245,8 +1232,8 @@ class TestSubnetOptionsGetClientError(_ViewTestBase):
         with stub_kea({}):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
-        msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("did not confirm the identity of subnet 1." in m.lower() for m in msgs))
+        # The page gives the reason of the write without its lead-in; the Subnets list adds its own Notice.
+        self.assertIn(client_settings_message(bad), [str(m) for m in response.context["messages"]])
 
 
 class TestServerOptionsGetClientError(_ViewTestBase):

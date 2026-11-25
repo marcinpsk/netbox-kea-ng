@@ -34,6 +34,8 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
+from .. import config_write
+from ..change_outcome import READ_UNUSABLE
 from ..constants import Family
 from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
@@ -79,7 +81,6 @@ def _shown(network: str = "", **values: str) -> dict[str, str]:
     """Return the hidden fields of an edit page that confirmed the Shared Network *network* and showed *values*."""
     return {
         "original_network": network,
-        "original_network_confirmed": "True",
         "shared_networks_complete": "True",
         **{f"shown_{field}": value for field, value in values.items()},
     }
@@ -815,7 +816,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
             get = self.client.get(self._url())
         self.assertEqual(get.status_code, 302)
         self.assertIn(
-            "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
+            "Subnet 42 (10.0.0.0/24) has a live value that the edit form cannot show.",
             [str(m) for m in get_messages(get.wsgi_request)],
         )
 
@@ -1202,11 +1203,13 @@ class TestServerSubnet4EditView(_ViewTestBase):
 
     def test_inherited_subnet_options_empty_when_kea_config_fails(self):
         """Subnet facts prefill the form without unavailable inherited options."""
-        with self._get_stub(subnet=_SUBNET4_GET_FULL[0], config={"result": 1, "text": "err"}):
+        responses = _edit_responses(4, _SUBNET4_GET_FULL[0], _CONFIG4_NO_NETWORKS[0])
+        # The prepare read gets the configuration; the display read of the hints fails.
+        responses["config-get"] = queued(responses["config-get"], {"result": 1, "text": "err"})
+        with stub_kea(responses):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["inherited_options"], {})
-        self.assertContains(response, "this form cannot be saved")
 
     def test_inherited_subnet_options_excludes_field_already_set_in_subnet(self):
         """F5: Fields already set in the subnet itself are excluded from inherited_options."""
@@ -1555,8 +1558,11 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
-    """Subnet facts prefill the edit form when Server Configuration is unavailable."""
+class TestSubnetEditWithoutTheServerConfiguration(_ViewTestBase):
+    """The edit form shows the subnet4-get entry, so it opens when only the Subnet list confirms the membership."""
+
+    # Kea 3.2.0 names the Shared Network of each Subnet in the list, null for none.
+    _LISTED = {"subnet4-list": _subnet_list(4, [{"id": 42, "subnet": "10.0.0.0/24", "shared-network-name": None}])}
 
     def _url(self, subnet_id=42):
         return reverse(
@@ -1564,42 +1570,38 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
         )
 
     def test_get_rejects_malformed_subnet_response(self):
-        payloads = (
-            [],
-            {"result": 0, "arguments": {"subnet4": {"id": 42}}},
-            {"result": 0, "arguments": {"subnet4": ["not-an-object"]}},
-            {"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}},
-            {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "bad"}]}]}},
-        )
-        for payload in payloads:
+        unshowable = "Subnet 42 (10.0.0.0/24) has a live value that the edit form cannot show."
+        for payload, reason in (
+            ([], READ_UNUSABLE),
+            ({"result": 0, "arguments": {"subnet4": {"id": 42}}}, READ_UNUSABLE),
+            ({"result": 0, "arguments": {"subnet4": ["not-an-object"]}}, READ_UNUSABLE),
+            ({"result": 0, "arguments": {"subnet4": [{"id": 7, "subnet": "10.0.0.0/24"}]}}, READ_UNUSABLE),
+            (
+                {
+                    "result": 0,
+                    "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "bad"}]}]},
+                },
+                unshowable,
+            ),
+        ):
             with (
                 self.subTest(payload=payload),
-                stub_kea(
-                    {
-                        **_ABSENT_READ_HOOKS,
-                        "config-get": {"result": 1, "text": "unavailable"},
-                        "subnet4-get": payload,
-                    }
-                ),
+                stub_kea({**self._LISTED, "config-get": {"result": 1, "text": "unavailable"}, "subnet4-get": payload}),
             ):
+                self._fresh_client()
                 response = self.client.get(self._url())
                 self.assertRedirects(
                     response,
                     reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}),
                     fetch_redirect_response=False,
                 )
-                shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
-                self.assertIn((django_messages.ERROR, HEADLINES["configuration"]), shown)
-                self.assertIn(
-                    (
-                        django_messages.ERROR,
-                        "NetBox cannot show the configuration of Subnet 42, so the edit form cannot open.",
-                    ),
-                    shown,
+                self.assertEqual(
+                    [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+                    [(django_messages.ERROR, reason)],
                 )
 
-    def test_get_ignores_membership_under_a_duplicate_shared_network_name(self):
-        """A duplicate network name makes membership unknown, so the form reads the Subnet alone."""
+    def test_a_membership_that_no_source_confirms_does_not_open(self):
+        """A duplicate network name makes the declared membership unknown, and the list does not name one."""
         member = {"id": 42, "subnet": "10.0.0.0/24"}
         config = {
             "result": 0,
@@ -1607,33 +1609,31 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                 "Dhcp4": {"shared-networks": [{"name": "dup", "subnet4": [member]}, {"name": "dup", "subnet4": []}]}
             },
         }
-        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "subnet4-get": _SUBNET4_GET_FULL[0]}) as kea:
+        listed = _subnet_list(4, [member])
+        with stub_kea({"subnet4-list": listed, "config-get": config, "subnet4-get": _SUBNET4_GET_FULL[0]}) as kea:
             response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["form"].initial["shared_network"], "")
-        self.assertContains(response, "this form cannot be saved")
-        self.assertIn("subnet4-get", kea.commands())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual([str(m) for m in get_messages(response.wsgi_request)], [config_write.SUBNET_LIST_UNCONFIRMED])
+        self.assertNotIn("subnet4-get", kea.commands())
 
-    def test_get_falls_back_when_config_returns_none_arguments(self):
-        """Malformed configuration leaves the Subnet form available."""
-        config_none_args = {"result": 0, "arguments": None, "text": "no config"}
-        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config_none_args, "subnet4-get": _SUBNET4_GET_FULL[0]}):
-            response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "this form cannot be saved")
-
-    def test_get_falls_back_when_config_raises_kea_exception(self):
-        """GET must not crash when config-get fails (result 1 → real KeaException)."""
-        with stub_kea(
-            {
-                **_ABSENT_READ_HOOKS,
-                "config-get": {"result": 1, "text": "error"},
-                "subnet4-get": _SUBNET4_GET_FULL[0],
-            }
+    def test_get_opens_when_the_configuration_is_unusable(self):
+        """The Subnet list confirms the membership, so the form opens with the subnet4-get values and no hints."""
+        for name, config in (
+            ("none arguments", {"result": 0, "arguments": None, "text": "no config"}),
+            ("refused", {"result": 1, "text": "error"}),
+            ("transport error", requests.ConnectionError("down")),
+            ("not JSON", _raw_http_response(b"bad response")),
         ):
-            response = self.client.get(self._url())
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "this form cannot be saved")
+            with (
+                self.subTest(name),
+                stub_kea({**self._LISTED, "config-get": config, "subnet4-get": _SUBNET4_GET_FULL[0]}),
+            ):
+                self._fresh_client()
+                response = self.client.get(self._url())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
+                self.assertEqual(response.context["form"].initial["original_network"], "")
+                self.assertEqual(response.context["inherited_options"], {})
 
 
 # ---------------------------------------------------------------------------
@@ -2619,28 +2619,20 @@ class TestSubnetEditMessages(_ViewTestBase):
         self.assertEqual((sent["subnet"], sent["option-data"]), ("10.0.0.5/24", [dns]))
         self.assertEqual(sent["ddns-qualifying-suffix"], "example.org.")
 
-    def test_a_page_that_could_not_confirm_the_membership_sends_nothing(self):
-        """The page preselects no Shared Network, so a save of the fields must not take the Subnet out of it."""
+    def test_the_subnet_list_confirms_the_membership_when_the_configuration_read_fails(self):
+        """The page opens only on a confirmed membership, so it shows the Shared Network that the Subnet list names."""
         daemon = self._daemon()
         failed = {"result": 1, "text": "config-get failed"}
-        # The two configuration reads of the GET fail, and the reads of the POST succeed.
+        # The prepare read and the display read of the GET get no configuration.
         daemon.script("config-get", failed, failed)
         url = reverse(
             "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
         )
-        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
             page = self.client.get(url)
-            self.assertEqual(page.context["form"].initial["shared_network"], "")
-            shown = len(kea.commands())
-            response = self.client.post(url, {**_page_data(page), "dns_servers": "10.0.0.53"})
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(
-            response,
-            "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
-            "Reload the page and try again.",
-        )
-        self.assertEqual(kea.commands()[shown:], ["config-get"])
-        self.assertEqual(daemon.members, {42: "alpha"})
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.context["form"].initial["original_network"], "alpha")
+        self.assertEqual(page.context["form"].initial["shared_network"], "alpha")
 
     def test_a_page_without_the_shared_network_list_sends_nothing(self):
         daemon = self._daemon()
@@ -3057,11 +3049,14 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
 
     def test_a_get_that_cannot_confirm_the_subnet_redirects_with_an_error(self):
         failed = {"result": 1, "text": "internal error"}
-        unconfirmed = "NetBox could not confirm Subnet 1 in Kea. Reload the Subnets page and try again."
         for name, url, _data, _command, _reads, _confirmed in self._cases():
-            for state, responses in (
-                ("unreadable", _change_responses(_subnet_1(), **{"subnet4-list": failed, "config-get": failed})),
-                ("absent", _change_responses(None)),
+            for state, responses, reason in (
+                (
+                    "unreadable",
+                    _change_responses(_subnet_1(), **{"subnet4-list": failed, "config-get": failed}),
+                    config_write.SUBNET_LIST_UNCONFIRMED,
+                ),
+                ("absent", _change_responses(None), "Subnet 1 changed in Kea. Reload the page and try again."),
             ):
                 with self.subTest(name, state=state):
                     self.client.cookies.pop("messages", None)
@@ -3069,7 +3064,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                         response = self.client.get(url)
                     self.assertEqual(response.status_code, 302)
                     errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
-                    self.assertIn(unconfirmed, errors)
+                    self.assertEqual(errors, [reason])
 
     def test_a_delete_without_the_cidr_sends_nothing(self):
         for name, url, _data, _command, reads, _confirmed in self._cases():
@@ -3129,12 +3124,20 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
         )
 
     def test_get_exception_redirects_with_an_error(self):
-        """A failed configuration read leaves no CIDR for the confirm form, so the GET redirects."""
+        """Without the Subnet list the delete is refused, so the GET redirects with the reason of the write."""
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "configuration unavailable"}}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
         errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR]
-        self.assertIn("NetBox could not confirm Subnet 42 in Kea. Reload the Subnets page and try again.", errors)
+        self.assertEqual(
+            errors,
+            [
+                (
+                    "NetBox could not confirm Kea's Subnet list, because the subnet_cmds hook library is not loaded, "
+                    "so it did not send the change."
+                )
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3570,7 +3573,8 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
     def _shared_network_responses(self, networks):
         subnet = {"id": 1, "subnet": "198.18.0.0/24"}
         return {
-            "subnet4-list": _subnet_list(4, [subnet]),
+            # The list confirms the membership, which the unreadable Shared Networks cannot show.
+            "subnet4-list": _subnet_list(4, [{**subnet, "shared-network-name": None}]),
             "config-get": {
                 "result": 0,
                 "arguments": {
@@ -3602,8 +3606,18 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
     def test_null_shared_network_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints([None])
 
-    def test_duplicate_shared_network_subnet_ids_hide_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints(
+    def _assert_duplicate_ids_refuse_the_page(self, networks):
+        """Duplicate Subnet IDs make the Catalogue inconsistent, so the write refuses and the page does not open."""
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
+        with stub_kea(self._shared_network_responses(networks)):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual([str(m) for m in get_messages(response.wsgi_request)], [config_write.SUBNET_LIST_UNCONFIRMED])
+
+    def test_duplicate_shared_network_subnet_ids_refuse_the_page(self):
+        self._assert_duplicate_ids_refuse_the_page(
             [
                 {
                     "name": "clients",
@@ -3615,8 +3629,8 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ]
         )
 
-    def test_duplicate_subnet_ids_across_shared_networks_hide_inherited_hints(self):
-        self._assert_unreadable_shared_networks_hide_hints(
+    def test_duplicate_subnet_ids_across_shared_networks_refuse_the_page(self):
+        self._assert_duplicate_ids_refuse_the_page(
             [
                 {"name": "clients", "subnet4": [{"id": 2, "subnet": "198.18.1.0/24"}]},
                 {"name": "guests", "subnet4": [{"id": 2, "subnet": "198.18.2.0/24"}]},
@@ -3701,52 +3715,12 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         url = reverse(
             "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
         )
-        live_subnet = {"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}}
-        with stub_kea(
-            {
-                **_ABSENT_READ_HOOKS,
-                "config-get": {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp4": {
-                            "shared-networks": "invalid",
-                            "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
-                        }
-                    },
-                },
-                "subnet4-get": live_subnet,
-            }
-        ):
+        responses = self._shared_network_responses("invalid")
+        with stub_kea(responses):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["form"].initial["subnet_cidr"], "198.18.0.0/24")
-        self.assertContains(response, "this form cannot be saved")
         self.assertEqual(response.context["inherited_options"], {})
-
-    def test_transport_error_renders_edit_form_with_warning(self):
-        """A requests.RequestException on config-get must not cause a 500 in the edit view."""
-        url = reverse(
-            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
-        )
-        with stub_kea(
-            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": requests.ConnectionError("down")}
-        ):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "this form cannot be saved")
-        self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
-
-    def test_a_config_get_body_that_is_not_json_renders_edit_form_with_warning(self):
-        """A config-get reply that is not JSON must not cause a 500 in the edit view."""
-        url = reverse(
-            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
-        )
-        with stub_kea(
-            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": _raw_http_response(b"bad response")}
-        ):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "this form cannot be saved")
 
 
 # ---------------------------------------------------------------------------
@@ -3963,7 +3937,7 @@ def _pool_add_catalogue(pools: tuple[str, ...] = ("10.0.0.10-10.0.0.20",), *, co
 
 
 class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
-    """The Pool add form parses the Pool against the Verified Subnet before Kea sees it."""
+    """The Pool add form parses the Pool inside the shown CIDR before Kea sees it. The write checks the Subnet."""
 
     def _url(self, subnet_id=1):
         return reverse(
@@ -4034,41 +4008,41 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
                 )
                 self.assertIn(f"Pool {sent} added to subnet 1.", [str(m) for m in get_messages(response.wsgi_request)])
 
-    def _assert_form_error(self, response, kea, message):
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("pool", response.context["form"].errors)
-        self.assertEqual(response.context["form"].non_field_errors(), [message])
+    def _assert_not_sent(self, response, kea, reason):
+        """The form is valid, and the write refuses the Subnet with *reason*, as the page that cannot open does."""
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(m) for m in get_messages(response.wsgi_request)], [f"The change was not sent to Kea. {reason}"]
+        )
         self._assert_no_write(kea)
         self.assertNotIn("reservation-get-page", kea.commands())
 
-    def test_an_id_that_names_no_verified_subnet_is_a_form_error_and_kea_gets_no_command(self):
+    def test_an_id_that_names_no_verified_subnet_is_refused_by_the_write(self):
         response, kea = self._post("10.0.0.100-10.0.0.110", subnet_id=99)
 
-        self._assert_form_error(
-            response, kea, "This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."
-        )
+        self._assert_not_sent(response, kea, "Subnet 99 changed in Kea. Reload the page and try again.")
 
-    def test_an_unconfirmed_subnet_list_is_a_form_error_that_never_reads_as_absent(self):
+    def test_an_unconfirmed_subnet_list_is_refused_by_the_write_and_never_reads_as_absent(self):
         failed = {"result": 1, "text": "internal error"}
         for name, overrides in (
             ("unavailable catalogue", {"subnet4-list": failed, "config-get": failed}),
             ("identity read fails", {"subnet4-list": failed}),
         ):
             with self.subTest(name):
+                self._fresh_client()
                 response, kea = self._post("10.0.0.100-10.0.0.110", **overrides)
 
-                self._assert_form_error(
+                self._assert_not_sent(
                     response,
                     kea,
                     "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later.",
                 )
-                self.assertNotContains(response, "not in the current Subnet Catalogue")
 
     def test_a_cidr_that_is_not_the_verified_subnet_says_that_the_subnet_changed(self):
         with stub_kea({**_ABSENT_READ_HOOKS, **_pool_add_catalogue()}) as kea:
-            response = self.client.post(self._url(), {"subnet_cidr": "10.0.1.0/24", "pool": "10.0.0.100-10.0.0.110"})
+            response = self.client.post(self._url(), {"subnet_cidr": "10.0.1.0/24", "pool": "10.0.1.100-10.0.1.110"})
 
-        self._assert_form_error(response, kea, "Subnet 1 (10.0.1.0/24) changed in Kea. Reload the page and try again.")
+        self._assert_not_sent(response, kea, "Subnet 1 (10.0.1.0/24) changed in Kea. Reload the page and try again.")
 
     def test_a_rejected_change_shows_no_reservation_warning(self):
         reservations = _res_page([{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.50"}])
@@ -4452,14 +4426,15 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
                 self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
-        """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""
+        """A real get_client() failure (cert without key → ValueError) is the settings refusal of the write."""
         bad = _make_db_server(name="bad-cert-pooladd-cov", client_cert_path="/nonexistent/cert.pem")
         url = reverse("plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 42})
         response = self.client.post(url, {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"})
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "NetBox could not confirm Kea&#x27;s Subnet list")
-        msgs = list(get_messages(response.wsgi_request))
-        self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [(m.level, str(m)) for m in get_messages(response.wsgi_request)],
+            [(django_messages.ERROR, invalid_server_settings(bad))],
+        )
 
 
 class TestPersistConfigBanner(_ViewTestBase):

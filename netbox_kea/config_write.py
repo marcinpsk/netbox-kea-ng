@@ -21,7 +21,7 @@ from django.db import DatabaseError, OperationalError, connection
 from . import event_scope, managed_fields, server_configuration
 from .change_outcome import Application, ChangeRejected, before_change, build_client, mutate, read_before
 from .constants import Family, IPNetworkValue, Persistence
-from .dhcp_options import DHCPOptionConflict, DHCPOptionEdit, DHCPOptionNameChange, OptionDefinition
+from .dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionEdit, DHCPOptionNameChange, OptionDefinition
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
@@ -30,11 +30,12 @@ from .kea import (
     KeaException,
     MalformedConfiguration,
     PoolAction,
+    SubnetDefinition,
     kea_error_message,
     subnet_network,
 )
 from .managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields
-from .pools import Pool
+from .pools import Pool, parse_pool
 from .read_failure import ReadFailure, attempt
 from .reservations import (
     InSubnetReservationScope,
@@ -52,6 +53,7 @@ from .subnet_catalogue import (
     MutationScope,
     NewSubnetIdentity,
     SharedNetworkMembership,
+    SubnetLookup,
     VerifiedSubnet,
     mutation,
     read_identity,
@@ -78,15 +80,29 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
+_SUBNET_CMDS_MISSING = (
+    "NetBox could not confirm Kea's Subnet list, because the subnet_cmds hook library is not loaded, so it did not "
+    "send the change."
+)
+_OPTIONS_UNREADABLE = "Could not load subnet configuration from Kea. The form cannot be displayed."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
 _RESERVATION_UPDATE_UNUSABLE = "NetBox could not build the update from the Reservation that Kea returned."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
 _UNSHOWABLE = "has a live value that the edit form cannot show."
 
 
-def subnet_changed(subnet_id: int, cidr: str) -> str:
-    """Return the message for a Subnet ID that no longer names the network *cidr* that the page showed."""
-    return f"Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again."
+def subnet_changed(subnet_id: int, cidr: str | None) -> str:
+    """Return the message for a Subnet ID that no longer names the network *cidr* that the page showed.
+
+    *cidr* None: the page has not shown a CIDR, or no Subnet has the ID. The page and the write then give one text.
+    """
+    shown = f" ({cidr})" if cidr is not None else ""
+    return f"Subnet {subnet_id}{shown} changed in Kea. Reload the page and try again."
+
+
+def invalid_pool(pool: str, cidr: str) -> str:
+    """Return the message for the Pool text *pool* that is not a valid Pool of the Subnet *cidr*."""
+    return f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea."
 
 
 @dataclass(frozen=True)
@@ -265,6 +281,116 @@ def _assign_new_subnet(
     return _run_steps(client, family, (), assign, applied=(added,), rolled_back=deleted)
 
 
+@dataclass(frozen=True)
+class SubnetEditTarget:
+    """What the Subnet edit page shows: the CIDR that Kea declares, the Shared Network (None: none) and the values."""
+
+    cidr: str
+    shared_network: str | None
+    shown: SubnetEdit
+
+
+@dataclass(frozen=True)
+class SubnetOptionsTarget:
+    """What the Subnet DHCP Options page shows: the CIDR that Kea declares and the DHCP Options of the Subnet."""
+
+    cidr: str
+    options: tuple[DHCPOption, ...]
+
+
+def prepare_edit_subnet(server: Server, family: Family, subnet_id: int) -> SubnetEditTarget:
+    """Read the Subnet that the edit page shows, with the checks of ``edit_subnet``. The read changes nothing.
+
+    Raises:
+        ChangeRejected: If ``edit_subnet`` refuses the Subnet for the same reason.
+
+    """
+    with build_client(server, family) as client:
+        subnet = _subnet_as_seen(read_verified(server, family), subnet_id, None, membership=True)
+        _definition, shown = _definition_as_seen(client, family, subnet, None)
+    network = subnet.shared_network.name if subnet.shared_network is not None else None
+    return SubnetEditTarget(subnet.declared_cidr, network, shown)
+
+
+def prepare_delete_subnet(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet:
+    """Read the Subnet that the delete page shows, with the checks of ``delete_subnet``. The read changes nothing.
+
+    Raises:
+        ChangeRejected: If ``delete_subnet`` refuses the Subnet for the same reason.
+
+    """
+    return _page_subnet(server, family, subnet_id)
+
+
+def prepare_add_pool(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet:
+    """Read the Subnet that the Pool add page shows, with the Subnet checks of ``add_pool``. The read changes nothing.
+
+    Raises:
+        ChangeRejected: If ``add_pool`` refuses the Subnet for the same reason.
+
+    """
+    return _page_subnet(server, family, subnet_id)
+
+
+def prepare_delete_pool(server: Server, family: Family, subnet_id: int, pool: str) -> VerifiedSubnet:
+    """Read the Subnet that the Pool delete page shows, with the checks of ``delete_pool``. The read changes nothing.
+
+    *pool* is the Pool text of the page.
+
+    Raises:
+        ChangeRejected: If ``delete_pool`` refuses the Subnet or the Pool for the same reason.
+
+    """
+    subnet = _page_subnet(server, family, subnet_id)
+    try:
+        parsed = parse_pool(pool, subnet.network)
+    except ValueError as exc:
+        raise ChangeRejected("not-sent", (invalid_pool(pool, subnet.cidr),)) from exc
+    _require_pool_state(subnet, "del", parsed)
+    return subnet
+
+
+def prepare_subnet_options(server: Server, family: Family, subnet_id: int) -> SubnetOptionsTarget:
+    """Read the DHCP Options that the Subnet options page shows, with the Subnet checks of ``set_subnet_options``.
+
+    The page needs every DHCP Option of the Subnet, because a save of a filtered list deletes the entry that the parse
+    omitted. The read changes nothing.
+
+    Raises:
+        ChangeRejected: If ``set_subnet_options`` refuses the Subnet for the same reason, or Kea did not return
+            every DHCP Option of the Subnet.
+
+    """
+    subnet = _page_subnet(server, family, subnet_id)
+    if subnet.configuration is None or not subnet.configuration_complete:
+        raise ChangeRejected("not-sent", (_OPTIONS_UNREADABLE,))
+    return SubnetOptionsTarget(subnet.declared_cidr, subnet.configuration.options)
+
+
+def _page_subnet(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet:
+    """Return the Verified Subnet with *subnet_id* from a live read that rotates nothing, for a change page."""
+    # The write builds its client first, so invalid client settings give the page the same refusal.
+    with build_client(server, family):
+        return _subnet_as_seen(read_verified(server, family), subnet_id, None)
+
+
+def _definition_as_seen(
+    client: KeaClient, family: Family, subnet: VerifiedSubnet, cidr: str | None
+) -> tuple[SubnetDefinition, SubnetEdit]:
+    """Read the ``subnet{v}-get`` entry of *subnet*, and the values that the edit form shows for it.
+
+    *cidr* is the CIDR that the page showed, and None for the page itself.
+    """
+    definition = read_before(lambda: client.subnet_definition(family, subnet.subnet_id))
+    if definition.network != subnet.network:
+        raise ChangeRejected("not-sent", (subnet_changed(subnet.subnet_id, cidr),))
+    configuration = server_configuration.definition_configuration(definition)
+    shown = None if configuration is None else managed_fields.shown_subnet(configuration, family)
+    if shown is None:
+        raise ChangeRejected("not-sent", (f"Subnet {subnet.subnet_id} ({subnet.declared_cidr}) {_UNSHOWABLE}",))
+    return definition, shown
+
+
 def edit_subnet(
     server: Server,
     family: Family,
@@ -296,13 +422,7 @@ def edit_subnet(
             )
         if shared_network is not None and shared_network != current:
             _require_shared_network(client, family, shared_network, target_shown)
-        definition = read_before(lambda: client.subnet_definition(family, subnet_id))
-        if definition.network != subnet.network:
-            raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
-        configuration = server_configuration.definition_configuration(definition)
-        live = None if configuration is None else managed_fields.shown_subnet(configuration, family)
-        if live is None:
-            raise ChangeRejected("not-sent", (f"Subnet {subnet_id} ({cidr}) {_UNSHOWABLE}",))
+        definition, live = _definition_as_seen(client, family, subnet, cidr)
         # A value that changed after the page showed it would go back to the old value with the update.
         if live.written_by(edit) != shown.written_by(edit):
             raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
@@ -878,16 +998,22 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
         logger.warning("The lock transaction failed to end after the Configuration Change", exc_info=True)
 
 
-def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str, *, membership: bool = False) -> VerifiedSubnet:
+def _subnet_as_seen(
+    lookup: SubnetLookup, subnet_id: int, cidr: str | None, *, membership: bool = False
+) -> VerifiedSubnet:
     """Return the Verified Subnet with *subnet_id* and the network *cidr*: the Subnet that the operator saw.
 
-    *membership* True also requires a scope that confirms the Shared Network membership of the Subnet.
+    The prepare read of a change page and its write both check here. *cidr* None accepts any network, because the page
+    has not shown one yet. *membership* True also requires a lookup that confirms the Shared Network membership.
     """
     try:
-        subnet = scope.find_with_membership(subnet_id) if membership else scope.find_by_id(subnet_id)
+        subnet = lookup.find_with_membership(subnet_id) if membership else lookup.find_by_id(subnet_id)
     except CatalogueUnavailable as exc:
-        raise ChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
-    if subnet is None or subnet.network != subnet_network(cidr, scope.family):
+        unconfirmed = SUBNET_LIST_UNCONFIRMED if lookup.snapshot.subnet_cmds_available else _SUBNET_CMDS_MISSING
+        raise ChangeRejected("not-sent", (unconfirmed,)) from exc
+    if subnet is None:
+        raise ChangeRejected("not-sent", (subnet_changed(subnet_id, None),))
+    if cidr is not None and subnet.network != subnet_network(cidr, lookup.snapshot.family):
         raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
     return subnet
 

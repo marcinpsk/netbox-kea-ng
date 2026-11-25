@@ -777,7 +777,6 @@ class TestSubnetEditForm(SimpleTestCase):
 
         data = {
             "subnet_cidr": "10.0.0.0/24",
-            "original_network_confirmed": "True",
             "shared_networks_complete": "True",
             **kwargs,
         }
@@ -787,18 +786,6 @@ class TestSubnetEditForm(SimpleTestCase):
         """A form with only subnet_cidr (hidden) and no optional fields is valid."""
         form = self._form()
         self.assertTrue(form.is_valid(), form.errors)
-
-    def test_a_page_that_could_not_confirm_the_shared_network_cannot_be_saved(self):
-        """A missing or false confirmation fails closed, so a save never guesses the membership."""
-        unconfirmed = (
-            "NetBox could not confirm the Shared Network of this Subnet when it showed the page. "
-            "Reload the page and try again."
-        )
-        for value in ("False", ""):
-            with self.subTest(confirmed=value):
-                form = self._form(original_network_confirmed=value)
-                self.assertFalse(form.is_valid())
-                self.assertEqual(form.non_field_errors(), [unconfirmed])
 
     def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
         from netbox_kea.managed_fields import SubnetEdit, SubnetFields
@@ -1205,7 +1192,6 @@ class TestSubnetEditFormTimers(SimpleTestCase):
 
         data = {
             "subnet_cidr": "10.0.0.0/24",
-            "original_network_confirmed": "True",
             "shared_networks_complete": "True",
             **kwargs,
         }
@@ -1299,7 +1285,7 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
 
         forms = (
             SubnetAddForm(data={"subnet": "10.0.0.0/24"}),
-            SubnetEditForm(data={"subnet_cidr": "10.0.0.0/24", "original_network_confirmed": "True"}),
+            SubnetEditForm(data={"subnet_cidr": "10.0.0.0/24"}),
         )
         for form in forms:
             with self.subTest(form=type(form).__name__):
@@ -1346,7 +1332,7 @@ class TestSubnetEditFormAddressFamily(SimpleTestCase):
     def _form(self, **overrides):
         from netbox_kea.forms import SubnetEditForm
 
-        data = {"subnet_cidr": "192.0.2.0/24", "original_network_confirmed": "True", "shared_networks_complete": "True"}
+        data = {"subnet_cidr": "192.0.2.0/24", "shared_networks_complete": "True"}
         data.update(overrides)
         return SubnetEditForm(data=data)
 
@@ -1775,6 +1761,7 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
         identity=SubnetIdentity(subnet_id=1, network=network),
         declared_cidr=cidr,
         configuration=facts if configuration else None,
+        configuration_complete=configuration,
         shared_network=None,
         membership_known=True,
         qualifying_suffix="" if configuration else None,
@@ -1782,12 +1769,12 @@ def _verified_subnet(cidr="10.0.0.0/24", pools=("10.0.0.10-10.0.0.20",), *, conf
     )
 
 
-def _pool_add_form(*, data, subnet, absence_confirmed=True):
-    return PoolAddForm(data=data, subnet=subnet, absence_confirmed=absence_confirmed)
+def _pool_add_form(*, data, subnet):
+    return PoolAddForm(data=data, family=4, shown=subnet)
 
 
 class TestPoolAddForm(SimpleTestCase):
-    """The Pool is parsed inside the Verified Subnet and must not overlap an existing Pool."""
+    """The Pool is parsed inside the Subnet that the page showed and must not overlap a displayed Pool."""
 
     def test_a_cidr_pool_parses_to_its_range(self):
         form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.64/28"}, subnet=_verified_subnet())
@@ -1838,38 +1825,17 @@ class TestPoolAddForm(SimpleTestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_a_subnet_that_is_absent_from_a_complete_observation_is_a_form_error(self):
-        form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=None)
+    def test_a_subnet_that_the_display_does_not_show_skips_the_overlap_check(self):
+        """The write checks the Subnet itself, so the form parses the Pool inside the CIDR that the page showed."""
+        for name, shown in (
+            ("absent", None),
+            ("another network", _verified_subnet("10.0.1.0/24", pools=("10.0.1.10-10.0.1.20",))),
+        ):
+            with self.subTest(name):
+                form = _pool_add_form(data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, subnet=shown)
 
-        self.assertFalse(form.is_valid())
-        self.assertNotIn("pool", form.errors)
-        self.assertEqual(
-            form.non_field_errors(),
-            ["This Subnet is not in the current Subnet Catalogue. Reload the Subnets page and try again."],
-        )
-
-    def test_a_subnet_missing_from_an_incomplete_observation_never_reads_as_absent(self):
-        form = _pool_add_form(
-            data={"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.50-10.0.0.60"}, subnet=None, absence_confirmed=False
-        )
-
-        self.assertFalse(form.is_valid())
-        self.assertNotIn("pool", form.errors)
-        self.assertEqual(
-            form.non_field_errors(),
-            ["NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."],
-        )
-
-    def test_a_cidr_that_is_not_the_subnet_says_that_the_subnet_changed(self):
-        form = _pool_add_form(
-            data={"subnet_cidr": "10.0.1.0/24", "pool": "10.0.1.50-10.0.1.60"}, subnet=_verified_subnet()
-        )
-
-        self.assertFalse(form.is_valid())
-        self.assertNotIn("pool", form.errors)
-        self.assertEqual(
-            form.non_field_errors(), ["Subnet 1 (10.0.1.0/24) changed in Kea. Reload the page and try again."]
-        )
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["pool"].range, "10.0.0.10-10.0.0.20")
 
     def test_a_missing_invalid_or_other_family_cidr_is_a_form_error(self):
         for cidr in ("", "not-a-cidr", "2001:db8::/64"):

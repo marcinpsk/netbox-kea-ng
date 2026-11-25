@@ -253,8 +253,11 @@ class TestWorkspaceReturn(_ViewTestBase):
                 + "?"
                 + urlencode([("server", self.server.pk), ("server", other.pk), ("q", cidr)])
             )
+            subnet = {"id": 7, "subnet": cidr, "pools": [{"pool": pool}]}
             responses = {
-                **_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr, "pools": [{"pool": pool}]}]),
+                **_catalogue_responses_for_subnets(family, [subnet]),
+                # The edit page shows the entry that the stale-value check of its write reads.
+                f"subnet{family}-get": {"result": 0, "arguments": {f"subnet{family}": [subnet]}},
                 f"stat-lease{family}-get": {"result": 3},
                 f"lease{family}-wipe": {"result": 1, "text": "Refused"},
             }

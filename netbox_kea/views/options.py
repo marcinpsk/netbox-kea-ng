@@ -32,11 +32,12 @@ from ._base import (
     LazyClient,
     daemon_version,
     run_change,
+    run_prepare,
     safe_return_url,
 )
 from .notices import notice, show_notices
 from .server_scope import ServerAccess, ServerAccessMixin, permitted_servers
-from .subnets import NO_SUBNET_CIDR, SUBNETS_TAB, displayed_subnet
+from .subnets import NO_SUBNET_CIDR, SUBNETS_TAB
 from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, subsection_nav
 
 # One Config tab for both sections and both families; ServerOptionDefView owns it.
@@ -77,40 +78,18 @@ class ServerSubnetOptionsEditView(FamilyRouteMixin, ServerAccessMixin, View):
 
     tab = SUBNETS_TAB
 
-    def _get_subnet_from_config(
-        self, request: HttpRequest, server: Server, subnet_id: int
-    ) -> server_configuration.DeclaredSubnet | None:
-        """Return the one complete declared Subnet with this ID from a live read."""
-        snapshot = server_configuration.for_verification(server, self.dhcp_version)
-        show_notices(request, notice(snapshot))
-        matches = [subnet for subnet in snapshot.subnets if subnet.declared_subnet_id == subnet_id]
-        if len(matches) != 1 or not matches[0].complete:
-            return None
-        return matches[0]
-
     def get(self, request, pk: int, subnet_id: int):
         """Render the DHCP Option form of the Subnet."""
         server = self.server
         return_url = safe_return_url(
             request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
-        catalogue, verified = displayed_subnet(request, server, self.dhcp_version, subnet_id)
-        if verified is None:
-            reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
-            messages.error(
-                request,
-                f"Kea did not confirm the identity of Subnet {subnet_id}{reason}. "
-                "NetBox changes the DHCP Options of a Subnet only after Kea confirms its identity.",
-            )
+        target = run_prepare(request, lambda: config_write.prepare_subnet_options(server, self.dhcp_version, subnet_id))
+        if target is None:
             return redirect(return_url)
-        subnet = self._get_subnet_from_config(request, server, subnet_id)
-        if subnet is None:
-            messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
-            return redirect(return_url)
-        initial = [opt.form_initial() for opt in subnet.configuration.options]
-        formset = forms.DHCPOptionRowFormSet(initial=initial)
-        form = forms.SubnetConfirmForm(initial={"subnet_cidr": subnet.declared_cidr}, family=self.dhcp_version)
-        return self._render(request, server, subnet_id, subnet.declared_cidr, formset, form, return_url)
+        formset = forms.DHCPOptionRowFormSet(initial=[opt.form_initial() for opt in target.options])
+        form = forms.SubnetConfirmForm(initial={"subnet_cidr": target.cidr}, family=self.dhcp_version)
+        return self._render(request, server, subnet_id, target.cidr, formset, form, return_url)
 
     def _render(
         self,

@@ -29,3 +29,13 @@ def run_change_loop(rows, change):
     # ok: kea-change-rejection-caught-outside-mapper
     except ChangeRejected:
         return []
+
+
+# ruleid: kea-change-mapper-outside-base
+def run_prepare(request, prepare):
+    try:
+        return prepare()
+    # ok: kea-change-rejection-caught-outside-mapper
+    except ChangeRejected as rejection:
+        messages.error(request, rejection.reason)
+        return None

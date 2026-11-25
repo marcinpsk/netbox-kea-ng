@@ -650,6 +650,7 @@ class ReservationMatchContractTest(SimpleTestCase):
         identity=SubnetIdentity(subnet_id=20, network=ipaddress.ip_network("198.18.0.0/24")),
         declared_cidr="198.18.0.0/24",
         configuration=None,
+        configuration_complete=False,
         shared_network=None,
         membership_known=True,
         qualifying_suffix=None,

@@ -17,7 +17,6 @@ from .. import (
     config_write,
     forms,
     ip_parse,
-    managed_fields,
     runtime_change,
     server_configuration,
     subnet_catalogue,
@@ -44,6 +43,7 @@ from ._base import (
     POOL_RE,
     client_or_refusal,
     run_change,
+    run_prepare,
     safe_return_url,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
@@ -145,10 +145,10 @@ def _warn_reservations_in_pool(
     request: HttpRequest,
     server: Server,
     catalogue: CatalogueSnapshot,
-    subnet: VerifiedSubnet,
+    subnet_id: int,
     pool: Pool,
 ) -> None:
-    """Add a non-blocking warning when a Reservation of *subnet* has an address in *pool*.
+    """Add a non-blocking warning when a Reservation of the Subnet with *subnet_id* has an address in *pool*.
 
     Warns when the check cannot run.
     """
@@ -162,7 +162,7 @@ def _warn_reservations_in_pool(
         loaded = load_snapshot(
             server,
             "reservation",
-            lambda: client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id),
+            lambda: client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet_id),
         )
     if isinstance(loaded, Notice):
         # The Pool is added, so the failed advisory read is a warning, not an error.
@@ -178,8 +178,7 @@ def _warn_reservations_in_pool(
     addresses = [
         address
         for reservation in loaded.records
-        if isinstance(reservation.scope, InSubnetReservationScope)
-        and reservation.scope.subnet.subnet_id == subnet.subnet_id
+        if isinstance(reservation.scope, InSubnetReservationScope) and reservation.scope.subnet.subnet_id == subnet_id
         for address in reservation.addresses
     ]
     overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
@@ -191,26 +190,6 @@ def _warn_reservations_in_pool(
             f"Pool {pool.range} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
             "Kea allows this. Reservations take priority over pool allocation.",
         )
-
-
-def _unconfirmed_subnet(request: HttpRequest, subnet_id: int, return_url: str) -> HttpResponse:
-    """Leave a change page whose Subnet NetBox cannot confirm, so no form carries an empty CIDR."""
-    messages.error(
-        request, f"NetBox could not confirm Subnet {subnet_id} in Kea. Reload the Subnets page and try again."
-    )
-    return redirect(return_url)
-
-
-def displayed_subnet(
-    request: HttpRequest, server: Server, family: Family, subnet_id: int
-) -> tuple[CatalogueSnapshot, VerifiedSubnet | None]:
-    """Return the displayed Subnet Catalogue and its Verified Subnet with *subnet_id*; show why it is missing."""
-    catalogue = subnet_catalogue.display(server, family)
-    found = catalogue.find_by_id(subnet_id)
-    if isinstance(found, VerifiedSubnet):
-        return catalogue, found
-    show_notices(request, notice(catalogue))
-    return catalogue, None
 
 
 class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectView):
@@ -226,7 +205,9 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.Objec
     def _subnets_url(self, pk: int) -> str:
         return reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
 
-    def _render(self, request: HttpRequest, server: Server, subnet_id: int, form: forms.PoolAddForm) -> HttpResponse:
+    def _render(
+        self, request: HttpRequest, server: Server, subnet_id: int, subnet_cidr: str, form: forms.PoolAddForm
+    ) -> HttpResponse:
         return render(
             request,
             self.template_name,
@@ -234,7 +215,7 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.Objec
                 "object": server,
                 "form": form,
                 "subnet_id": subnet_id,
-                "subnet_cidr": form.subnet.cidr if form.subnet is not None else "",
+                "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
                 "return_url": safe_return_url(request, self._subnets_url(server.pk)),
                 "tab": self.tab,
@@ -244,24 +225,24 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.Objec
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the pool form of the Subnet."""
         server = self.server
-        catalogue, subnet = displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        subnet = run_prepare(request, lambda: config_write.prepare_add_pool(server, self.dhcp_version, subnet_id))
         if subnet is None:
-            return _unconfirmed_subnet(request, subnet_id, safe_return_url(request, self._subnets_url(pk)))
-        show_notices(request, notice(catalogue))
-        form = forms.PoolAddForm(
-            initial={"subnet_cidr": subnet.cidr}, subnet=subnet, absence_confirmed=catalogue.confirms_absence
-        )
-        return self._render(request, server, subnet_id, form)
+            return redirect(safe_return_url(request, self._subnets_url(pk)))
+        form = forms.PoolAddForm(initial={"subnet_cidr": subnet.cidr}, family=self.dhcp_version, shown=None)
+        return self._render(request, server, subnet_id, subnet.cidr, form)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Add the pool to the Subnet."""
         server = self.server
-        catalogue, subnet = displayed_subnet(request, server, self.dhcp_version, subnet_id)
-        form = forms.PoolAddForm(request.POST, subnet=subnet, absence_confirmed=catalogue.confirms_absence)
-        if not form.is_valid() or form.subnet is None:
-            if subnet is not None:
-                show_notices(request, notice(catalogue))
-            return self._render(request, server, subnet_id, form)
+        # The overlap check reads the displayed Pools. The write checks the Subnet itself.
+        catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        shown = catalogue.find_by_id(subnet_id)
+        form = forms.PoolAddForm(
+            request.POST, family=self.dhcp_version, shown=shown if isinstance(shown, VerifiedSubnet) else None
+        )
+        if not form.is_valid():
+            show_notices(request, notice(catalogue))
+            return self._render(request, server, subnet_id, form.data.get("subnet_cidr", ""), form)
         pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
         outcome = run_change(
@@ -271,7 +252,7 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.Objec
             lambda: config_write.add_pool(server, self.dhcp_version, subnet_id, cidr, pool),
         )
         if outcome is not None:
-            _warn_reservations_in_pool(request, server, catalogue, form.subnet, pool)
+            _warn_reservations_in_pool(request, server, catalogue, subnet_id, pool)
         return redirect(safe_return_url(request, self._subnets_url(pk)))
 
 
@@ -294,10 +275,11 @@ class ServerSubnetPoolDeleteView(FamilyRouteMixin, ServerAccessMixin, generic.Ob
         if not POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.server
-        catalogue, subnet = displayed_subnet(request, server, self.dhcp_version, subnet_id)
+        subnet = run_prepare(
+            request, lambda: config_write.prepare_delete_pool(server, self.dhcp_version, subnet_id, pool)
+        )
         if subnet is None:
-            return _unconfirmed_subnet(request, subnet_id, safe_return_url(request, self._subnets_url(pk)))
-        show_notices(request, notice(catalogue))
+            return redirect(safe_return_url(request, self._subnets_url(pk)))
         return render(
             request,
             self.template_name,
@@ -328,7 +310,7 @@ class ServerSubnetPoolDeleteView(FamilyRouteMixin, ServerAccessMixin, generic.Ob
         try:
             parsed_pool = parse_pool(pool, subnet_network(cidr, self.dhcp_version))
         except ValueError:
-            messages.error(request, f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea.")
+            messages.error(request, config_write.invalid_pool(pool, cidr))
             return redirect(return_url)
         run_change(
             request,
@@ -506,53 +488,35 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the edit form with the shown Subnet facts."""
         server = self.server
-        catalogue = subnet_catalogue.display(server, self.dhcp_version)
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        show_notices(request, notice(catalogue), notice(configuration))
-        configured_target = configuration.subnet_with_membership(subnet_id)
-        subnet_configuration = None
-        subnet_cidr = ""
-        # Membership comes from the live declaration alone, never from the cached catalogue.
-        display_network = configured_target.shared_network_name or "" if configured_target is not None else ""
-        if configured_target is not None and configured_target.complete:
-            subnet_configuration = configured_target.configuration
-            subnet_cidr = configured_target.declared_cidr
-        if subnet_configuration is None:
-            declaration = server_configuration.subnet_for_display(server, self.dhcp_version, subnet_id)
-            if declaration is not None:
-                subnet_configuration = declaration.configuration
-                subnet_cidr = declaration.declared_cidr
-        shown = (
-            None
-            if subnet_configuration is None
-            else managed_fields.shown_subnet(subnet_configuration, self.dhcp_version)
-        )
-        if shown is None:
-            messages.error(
-                request, f"NetBox cannot show the configuration of Subnet {subnet_id}, so the edit form cannot open."
-            )
+        target = run_prepare(request, lambda: config_write.prepare_edit_subnet(server, self.dhcp_version, subnet_id))
+        if target is None:
             return redirect(safe_return_url(request, self._subnets_url(pk)))
-        # Only an available configuration declares the target.
-        membership_confirmed = configured_target is not None
-        if not membership_confirmed:
-            messages.warning(
-                request,
-                "Could not confirm the Shared Network of this Subnet, so this form cannot be saved. "
-                "Reload the page and try again.",
-            )
+        network = target.shared_network or ""
         initial = {
-            "subnet_cidr": subnet_cidr,
-            **forms.SubnetEditForm.initial_for(shown),
-            "shared_network": display_network,
-            "original_network": display_network,
-            "original_network_confirmed": membership_confirmed,
+            "subnet_cidr": target.cidr,
+            **forms.SubnetEditForm.initial_for(target.shown),
+            "shared_network": network,
+            "original_network": network,
         }
         form = forms.SubnetEditForm(initial=initial)
+        return self._render(request, server, subnet_id, target.cidr, form, network, initial)
+
+    def _render(
+        self,
+        request: HttpRequest,
+        server: Server,
+        subnet_id: int,
+        subnet_cidr: str,
+        form: forms.SubnetEditForm,
+        network: str,
+        values: dict[str, Any],
+    ) -> HttpResponse:
+        """Show the form with the Shared Networks and the option hints of the cached configuration."""
+        configuration = server_configuration.display(server, self.dhcp_version)
+        show_notices(request, notice(configuration))
         _offer_networks(request, form, configuration)
         inherited_options = (
-            _inherited_subnet_options(configuration, display_network, initial)
-            if configured_target is not None and configuration.shared_networks_complete
-            else {}
+            _inherited_subnet_options(configuration, network, values) if configuration.shared_networks_complete else {}
         )
         return render(
             request,
@@ -563,7 +527,7 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
                 "subnet_id": subnet_id,
                 "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
-                "return_url": safe_return_url(request, self._subnets_url(pk)),
+                "return_url": safe_return_url(request, self._subnets_url(server.pk)),
                 "inherited_options": inherited_options,
                 "tab": self.tab,
             },
@@ -576,29 +540,16 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
         subnet_id: int,
         form: forms.SubnetEditForm,
     ) -> HttpResponse:
-        """Show the submitted form again, with the Shared Networks and option hints of the cached configuration."""
-        configuration = server_configuration.display(server, self.dhcp_version)
-        show_notices(request, notice(configuration))
-        _offer_networks(request, form, configuration)
+        """Show the submitted form again."""
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
-        inherited_options = (
-            _inherited_subnet_options(configuration, form.data.get("shared_network", ""), submitted)
-            if configuration.shared_networks_complete
-            else {}
-        )
-        return render(
+        return self._render(
             request,
-            self.template_name,
-            {
-                "object": server,
-                "form": form,
-                "subnet_id": subnet_id,
-                "subnet_cidr": form.data.get("subnet_cidr", ""),
-                "dhcp_version": self.dhcp_version,
-                "return_url": safe_return_url(request, self._subnets_url(server.pk)),
-                "inherited_options": inherited_options,
-                "tab": self.tab,
-            },
+            server,
+            subnet_id,
+            form.data.get("subnet_cidr", ""),
+            form,
+            form.data.get("shared_network", ""),
+            submitted,
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
@@ -649,12 +600,10 @@ class ServerSubnetDeleteView(FamilyRouteMixin, ServerAccessMixin, generic.Object
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         """Render the confirmation page of the Subnet delete."""
         server = self.server
-        configuration = server_configuration.for_verification(server, self.dhcp_version)
-        show_notices(request, notice(configuration))
-        declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
-        if len(declared) != 1:
-            return _unconfirmed_subnet(request, subnet_id, safe_return_url(request, self._subnets_url(pk)))
-        subnet_cidr = declared[0].declared_cidr
+        subnet = run_prepare(request, lambda: config_write.prepare_delete_subnet(server, self.dhcp_version, subnet_id))
+        if subnet is None:
+            return redirect(safe_return_url(request, self._subnets_url(pk)))
+        subnet_cidr = subnet.declared_cidr
         return render(
             request,
             self.template_name,

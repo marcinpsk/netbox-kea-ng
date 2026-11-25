@@ -21,6 +21,11 @@ from .utils import _ViewTestBase
 
 _NAMESPACE = "plugins:netbox_kea:"
 
+_PREPARED = (
+    "A change page opens only after the prepare read of its write, and a failed read shows the reason of the write. "
+    "test_subnet_change_pages.py covers it."
+)
+
 #: Each Server GET route that shows no Snapshot Notice, with the reason.
 _EXEMPT = {
     "combined": "The Overview reads no Snapshot; badges have their own route.",
@@ -55,6 +60,11 @@ _EXEMPT = {
     "server_reservation_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_shared_network_add": "A form that reads no Kea data.",
     "server_shared_network_delete": "A confirmation page that reads no Kea data.",
+    "server_subnet_delete": _PREPARED,
+    "server_subnet_edit": _PREPARED,
+    "server_subnet_options_edit": _PREPARED,
+    "server_subnet_pool_add": _PREPARED,
+    "server_subnet_pool_delete": _PREPARED,
     "server_option_def_tab": "The v4 tab link of server_option_def, which the sweep checks.",
     "server_leases_tab": "The v4 tab link of server_leases, which the sweep checks.",
     "server_reservations_tab": "The v4 tab link of server_reservations, which the sweep checks.",
@@ -72,13 +82,8 @@ _EXPECTED: dict[str, frozenset[NoticeKind]] = {
     "server_shared_networks": frozenset({"configuration"}),
     "server_shared_network_edit": frozenset({"configuration"}),
     "server_subnet_add": frozenset({"configuration"}),
-    "server_subnet_delete": frozenset({"configuration"}),
     "server_subnet_wipe_leases": frozenset({"configuration"}),
-    "server_subnet_edit": frozenset({"catalogue", "configuration"}),
     "server_subnets": frozenset({"catalogue"}),
-    "server_subnet_options_edit": frozenset({"catalogue"}),
-    "server_subnet_pool_add": frozenset({"catalogue"}),
-    "server_subnet_pool_delete": frozenset({"catalogue"}),
     "server_leases": frozenset({"catalogue"}),
     "server_reservation_add": frozenset({"catalogue"}),
     "server_reservation_edit": frozenset({"catalogue"}),

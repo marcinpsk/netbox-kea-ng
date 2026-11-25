@@ -43,6 +43,19 @@ def ok_view_runs_the_change_through_the_mapper(request, server):
     return run_change(request, "Deleted.", lambda: config_write.delete_shared_network(server, 4, "net"))
 
 
+def bad_view_catches_a_prepare_refusal(request, server):
+    try:
+        config_write.prepare_delete_subnet(server, 4, 1)
+    # ruleid: kea-change-rejection-caught-outside-mapper
+    except ChangeRejected as rejection:
+        messages.error(request, rejection.reason)
+
+
+def ok_view_runs_the_prepare_read_through_the_presenter(request, server):
+    # ok: kea-change-rejection-caught-outside-mapper
+    return run_prepare(request, lambda: config_write.prepare_delete_subnet(server, 4, 1))
+
+
 def ok_view_catches_a_form_error(request, form):
     try:
         form.full_clean()
