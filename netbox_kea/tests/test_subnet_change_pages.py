@@ -17,7 +17,7 @@ from django.urls import reverse
 from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.read_failure import client_settings_message
 
-from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, _subnet_list, stub_kea
+from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, _res_page, _subnet_list, stub_kea
 from .utils import _make_db_server, _page_data, _ViewTestBase, invalid_server_settings
 
 _SEEN = "10.0.0.0/24"
@@ -363,3 +363,38 @@ class TestEditPageNeedsTheSharedNetworkList(_PageClient):
         self.assertIn("subnet4-update", kea.commands())
         self.assertNotIn("network4-subnet-del", kea.commands())
         self.assertEqual(daemon.members, {1: "alpha"})
+
+
+class TestPoolAddWarningReadsTheCatalogueAfterTheWrite(_PageClient):
+    def test_a_subnet_that_the_display_did_not_hold_still_gets_its_reservation_warning(self):
+        """The write checks the Subnet live, so the warning reads the Catalogue again after the write."""
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        with stub_kea(_catalogue_responses_for_subnets(4, [])):
+            subnet_catalogue.display(self.server, 4)
+        # Another tool added Subnet 1 and its Reservation after the display cache was filled.
+        responses = {
+            **_catalogue_responses_for_subnets(4, [subnet]),
+            "subnet4-delta-add": {"result": 0},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "reservation-get-page": _res_page(
+                [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.15"}]
+            ),
+        }
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
+        with stub_kea(responses) as kea:
+            response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "pool": "198.18.0.10-198.18.0.20"})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnet4-delta-add", kea.commands())
+        warnings = [str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.WARNING]
+        self.assertEqual(
+            warnings,
+            [
+                (
+                    "Pool 198.18.0.10-198.18.0.20 overlaps 1 existing reservation(s): 198.18.0.15. "
+                    "Kea allows this. Reservations take priority over pool allocation."
+                )
+            ],
+        )

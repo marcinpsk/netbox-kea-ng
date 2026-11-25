@@ -2954,9 +2954,10 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             with self.subTest(name):
                 messages, kea = self._post(url, data, _change_responses(_subnet_1()))
                 self.assertEqual(messages, [(django_messages.SUCCESS, confirmed)])
-                # The Pool add reads the Reservations after the change, for its overlap warning.
-                commands = [name for name in kea.commands() if name != "reservation-get-page"]
-                self.assertEqual(commands[-4:], [command, "config-get", "config-test", "config-write"])
+                # The Pool add reads the Catalogue and the Reservations after the change, for its overlap warning.
+                commands = kea.commands()
+                sent = commands.index(command)
+                self.assertEqual(commands[sent : sent + 4], [command, "config-get", "config-test", "config-write"])
 
     def test_the_commands_name_the_verified_subnet_and_the_typed_pool(self):
         bodies = {

@@ -252,7 +252,9 @@ class ServerSubnetPoolAddView(FamilyRouteMixin, ServerAccessMixin, generic.Objec
             lambda: config_write.add_pool(server, self.dhcp_version, subnet_id, cidr, pool),
         )
         if outcome is not None:
-            _warn_reservations_in_pool(request, server, catalogue, subnet_id, pool)
+            # The write rotated the cache, so this read is live and holds a Subnet that the first read missed.
+            after = subnet_catalogue.display(server, self.dhcp_version)
+            _warn_reservations_in_pool(request, server, after, subnet_id, pool)
         return redirect(safe_return_url(request, self._subnets_url(pk)))
 
 
