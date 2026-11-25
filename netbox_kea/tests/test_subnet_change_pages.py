@@ -7,12 +7,13 @@ list with the reason that the write gives for the same Kea state.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
 from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.core.cache import caches
+from django.core.cache.backends.base import DEFAULT_TIMEOUT, BaseCache
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
@@ -161,8 +162,10 @@ def _browser_data(response) -> dict[str, str]:
 def _selected(response) -> str:
     """Return the Shared Network that the selector of *response* posts: the selected option, else the first one."""
     select = BeautifulSoup(response.content, "html.parser").select_one("select[name=shared_network]")
+    assert select is not None, "The page has no Shared Network selector."
     option = select.select_one("option[selected]") or select.select_one("option")
-    return option["value"]
+    assert option is not None, "The Shared Network selector has no option."
+    return str(option["value"])
 
 
 class _PageClient(_ViewTestBase):
@@ -451,17 +454,30 @@ class TestPrepareReadIsLive(_PageClient):
         self.assertEqual([pool.range for pool in subnet.configuration.pools], [_POOL])
 
 
-class _UnreachableCache:
+class _UnreachableCache(BaseCache):
     """A cache backend whose every access fails, as a cache server that stops answering does."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    @staticmethod
+    def _fail(operation: str) -> NoReturn:
+        raise ConnectionError(f"The cache server did not answer {operation}.")
+
+    def get(self, key: Any, default: Any = None, version: Any = None) -> Any:
+        self._fail("get")
+
+    def set(self, key: Any, value: Any, timeout: Any = DEFAULT_TIMEOUT, version: Any = None) -> None:
+        self._fail("set")
+
+    def add(self, key: Any, value: Any, timeout: Any = DEFAULT_TIMEOUT, version: Any = None) -> bool:
+        self._fail("add")
+
+    def delete(self, key: Any, version: Any = None) -> bool:
+        self._fail("delete")
 
     def close(self, **kwargs: Any) -> None:
         """Do nothing: Django closes each cache at the end of a request, and a lost connection has nothing to close."""
-
-    def __getattr__(self, name: str):
-        def fail(*args: Any, **kwargs: Any) -> Any:
-            raise ConnectionError(f"The cache server did not answer {name}.")
-
-        return fail
 
 
 class TestPoolAddAfterACacheFailure(_PageClient):
