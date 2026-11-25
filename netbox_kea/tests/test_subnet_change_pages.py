@@ -398,3 +398,22 @@ class TestPoolAddWarningReadsTheCatalogueAfterTheWrite(_PageClient):
                 )
             ],
         )
+
+
+class TestPrepareReadIsLive(_PageClient):
+    def test_the_pool_delete_page_reads_kea_live_and_leaves_the_display_cache(self):
+        """The display cache still holds the Pool, the live read does not, so the page refuses and the cache stays."""
+        (pool_delete,) = (page for page in _PAGES if page.name == "pool delete")
+        with stub_kea(_kea()):
+            subnet_catalogue.display(self.server, 4)
+        response, kea = self._get(pool_delete, _kea((_subnet(pools=()),)))
+        self.assertRedirects(response, self._subnets_url(), fetch_redirect_response=False)
+        self.assertEqual(
+            self._errors(response), [f"Subnet 1 ({_SEEN}) has no Pool {_POOL}. Reload the page and try again."]
+        )
+        self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+        with stub_kea(_kea((_subnet(pools=()),))) as kea:
+            cached = subnet_catalogue.display(self.server, 4)
+        self.assertEqual(kea.commands(), [])
+        (subnet,) = cached.subnets
+        self.assertEqual([pool.range for pool in subnet.configuration.pools], [_POOL])
