@@ -12,6 +12,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
+from django.core.cache import caches
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
@@ -448,3 +449,59 @@ class TestPrepareReadIsLive(_PageClient):
         self.assertEqual(kea.commands(), [])
         (subnet,) = cached.subnets
         self.assertEqual([pool.range for pool in subnet.configuration.pools], [_POOL])
+
+
+class _UnreachableCache:
+    """A cache backend whose every access fails, as a cache server that stops answering does."""
+
+    def close(self, **kwargs: Any) -> None:
+        """Do nothing: Django closes each cache at the end of a request, and a lost connection has nothing to close."""
+
+    def __getattr__(self, name: str):
+        def fail(*args: Any, **kwargs: Any) -> Any:
+            raise ConnectionError(f"The cache server did not answer {name}.")
+
+        return fail
+
+
+class TestPoolAddAfterACacheFailure(_PageClient):
+    def test_an_applied_pool_add_is_reported_when_the_cache_fails_after_the_write(self):
+        """The Reservation warning is advisory, so a cache that fails after Kea applied the Pool gives no error page."""
+        subnet = {"id": 1, "subnet": "198.18.0.0/24"}
+        default = caches["default"]
+
+        def applied(_body: dict[str, Any]) -> dict[str, Any]:
+            caches["default"] = _UnreachableCache()
+            return {"result": 0}
+
+        responses = {
+            **_catalogue_responses_for_subnets(4, [subnet]),
+            "subnet4-delta-add": applied,
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+            "reservation-get-page": _res_page(
+                [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.15"}]
+            ),
+        }
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", "pool": "198.18.0.10-198.18.0.20"})
+        finally:
+            caches["default"] = default
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("subnet4-delta-add", kea.commands())
+        messages = [(m.level, str(m)) for m in get_messages(response.wsgi_request)]
+        self.assertIn((django_messages.SUCCESS, "Pool 198.18.0.10-198.18.0.20 added to subnet 1."), messages)
+        self.assertIn(
+            (
+                django_messages.WARNING,
+                (
+                    "Pool 198.18.0.10-198.18.0.20 overlaps 1 existing reservation(s): 198.18.0.15. "
+                    "Kea allows this. Reservations take priority over pool allocation."
+                ),
+            ),
+            messages,
+        )
