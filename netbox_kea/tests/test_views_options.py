@@ -276,7 +276,8 @@ class TestSubnetOptionsView(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         texts = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
-        self.assertIn("Could not load subnet configuration from Kea. The form cannot be displayed.", texts)
+        # The write refuses the same option-data, so the page does not open.
+        self.assertEqual(texts, ["Kea returned a configuration that NetBox cannot edit safely."])
 
     def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
         with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])) as kea:
@@ -285,7 +286,8 @@ class TestSubnetOptionsView(_ViewTestBase):
             warm = kea.commands().count("config-get")
             self.client.get(self._url())
 
-        self.assertEqual(kea.commands().count("config-get"), warm + 1)
+        # The Catalogue read and the read of the configuration that the write edits are both live.
+        self.assertEqual(kea.commands().count("config-get"), warm + 2)
 
     def test_get_unavailable_configuration_shows_diagnostic_and_redirects(self):
         unreachable = requests.ConnectionError("unreachable")

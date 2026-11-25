@@ -109,7 +109,6 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
             ),
             declared_cidr=entry["subnet"],
             configuration=declared[int(entry["id"])].configuration if int(entry["id"]) in declared else None,
-            configuration_complete=int(entry["id"]) in declared and declared[int(entry["id"])].complete,
             shared_network=None,
             membership_known=False,
             qualifying_suffix=suffixes.get(int(entry["id"])),

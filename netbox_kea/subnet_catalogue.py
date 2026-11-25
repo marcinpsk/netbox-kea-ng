@@ -102,8 +102,6 @@ class VerifiedSubnet:
     # Kea's `subnet` text verbatim: Kea keeps host bits and compares this text in the delta commands.
     declared_cidr: str
     configuration: SubnetConfiguration | None
-    # False when a fact of the declaration is not valid, so *configuration* can miss a Pool or a DHCP Option.
-    configuration_complete: bool
     shared_network: SharedNetworkMembership | None
     # False when no source showed the membership, so *shared_network* None does not mean none.
     membership_known: bool
@@ -317,7 +315,6 @@ class _IdentityFact:
 class _ConfiguredFact:
     identity: SubnetIdentity
     configuration: SubnetConfiguration
-    complete: bool
     shared_network_name: str | None
     membership_complete: bool
     qualifying_suffix: str | None
@@ -520,7 +517,6 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
             _ConfiguredFact(
                 identity=SubnetIdentity(declared.declared_subnet_id, declared.network),
                 configuration=declared.configuration,
-                complete=declared.complete,
                 shared_network_name=declared.shared_network_name,
                 membership_complete=membership_complete,
                 qualifying_suffix=server_configuration.effective_qualifying_suffix(snapshot, declared),
@@ -752,7 +748,6 @@ def _reconcile(
                     identity=identity_fact.identity,
                     declared_cidr=identity_fact.declared_cidr,
                     configuration=configured_fact.configuration,
-                    configuration_complete=configured_fact.complete,
                     shared_network=_membership(shared_network_name),
                     membership_known=configured_fact.membership_complete or identity_fact.membership_complete,
                     qualifying_suffix=configured_fact.qualifying_suffix,
@@ -765,7 +760,6 @@ def _reconcile(
                     identity=identity_fact.identity,
                     declared_cidr=identity_fact.declared_cidr,
                     configuration=None,
-                    configuration_complete=False,
                     shared_network=_membership(identity_fact.shared_network_name),
                     membership_known=identity_fact.membership_complete,
                     qualifying_suffix=None,

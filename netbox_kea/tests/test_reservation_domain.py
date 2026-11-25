@@ -69,7 +69,6 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         identity=SubnetIdentity(subnet_id=subnet_id, network=ip_network(cidr)),
         declared_cidr=cidr,
         configuration=None,
-        configuration_complete=False,
         shared_network=None,
         membership_known=True,
         qualifying_suffix=None,

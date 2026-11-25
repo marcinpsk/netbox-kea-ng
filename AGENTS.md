@@ -533,7 +533,8 @@ or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page 
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 Each of these operations has a prepare read next to it (`prepare_edit_subnet`, `prepare_delete_subnet`,
 `prepare_add_pool`, `prepare_delete_pool`, `prepare_subnet_options`). It reads Kea live through `read_verified()`,
-rotates nothing, and runs the guard of the write (`_subnet_as_seen`). The GET of the page runs it through
+rotates nothing, and runs the guard of the write (`_subnet_as_seen`). The options read also runs the candidate checks
+of `set_subnet_options` (`CandidateConfiguration.subnet_options`) and sends no `config-test` or `config-set`. The GET of the page runs it through
 `run_prepare`, and a refusal sends the operator back to the Subnets list with the reason that the write gives. The
 form hints (the Shared Network choices, the inherited options, the displayed Pools of the overlap check) stay display
 data. `test_subnet_change_pages.py` keeps each page and its write together.

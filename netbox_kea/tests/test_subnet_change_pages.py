@@ -17,7 +17,7 @@ from django.urls import reverse
 from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.read_failure import client_settings_message
 
-from .kea_stub import SubnetDaemon, _subnet_list, stub_kea
+from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, _subnet_list, stub_kea
 from .utils import _make_db_server, _page_data, _ViewTestBase, invalid_server_settings
 
 _SEEN = "10.0.0.0/24"
@@ -78,6 +78,10 @@ _PAGES = (
 )
 
 
+_OPTIONS = tuple(page for page in _PAGES if page.name == "options")
+_UNSAFE = "Kea returned a configuration that NetBox cannot edit safely."
+
+
 def _subnet(cidr: str = _SEEN, pools: tuple[str, ...] = (_POOL,), **keys: Any) -> dict[str, Any]:
     return {"id": 1, "subnet": cidr, "pools": [{"pool": pool} for pool in pools], **keys}
 
@@ -116,6 +120,16 @@ _REFUSALS = (
         _UNCONFIRMED,
         pages=(_EDIT,),
     ),
+    _Refusal(
+        "invalid Option Definition",
+        {
+            **_kea(),
+            "config-get": _catalogue_responses_for_subnets(4, [_subnet()], option_definitions=({},))["config-get"],
+        },
+        _UNSAFE,
+        pages=_OPTIONS,
+    ),
+    _Refusal("invalid target DHCP Option", _kea((_subnet(**{"option-data": [{}]}),)), _UNSAFE, pages=_OPTIONS),
     _Refusal(
         "missing Pool",
         _kea((_subnet(pools=()),)),

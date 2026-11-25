@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from django.db import DatabaseError, OperationalError, connection
 
@@ -65,6 +65,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 # How long an operation waits for another operation on the same Kea daemon.
 LOCK_WAIT_SECONDS = 10.0
 
@@ -84,7 +86,6 @@ _SUBNET_CMDS_MISSING = (
     "NetBox could not confirm Kea's Subnet list, because the subnet_cmds hook library is not loaded, so it did not "
     "send the change."
 )
-_OPTIONS_UNREADABLE = "Could not load subnet configuration from Kea. The form cannot be displayed."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
 _RESERVATION_UPDATE_UNUSABLE = "NetBox could not build the update from the Reservation that Kea returned."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
@@ -351,20 +352,24 @@ def prepare_delete_pool(server: Server, family: Family, subnet_id: int, pool: st
 
 
 def prepare_subnet_options(server: Server, family: Family, subnet_id: int) -> SubnetOptionsTarget:
-    """Read the DHCP Options that the Subnet options page shows, with the Subnet checks of ``set_subnet_options``.
+    """Read the DHCP Options that the Subnet options page shows, with the checks of ``set_subnet_options``.
 
-    The page needs every DHCP Option of the Subnet, because a save of a filtered list deletes the entry that the parse
-    omitted. The read changes nothing.
+    The read takes the options from the running configuration that the write edits, with the same checks. It sends no
+    config-test and no config-set, and changes nothing.
 
     Raises:
-        ChangeRejected: If ``set_subnet_options`` refuses the Subnet for the same reason, or Kea did not return
-            every DHCP Option of the Subnet.
+        ChangeRejected: If ``set_subnet_options`` refuses the Subnet or its configuration for the same reason.
 
     """
-    subnet = _page_subnet(server, family, subnet_id)
-    if subnet.configuration is None or not subnet.configuration_complete:
-        raise ChangeRejected("not-sent", (_OPTIONS_UNREADABLE,))
-    return SubnetOptionsTarget(subnet.declared_cidr, subnet.configuration.options)
+    with build_client(server, family) as client:
+        subnet = _subnet_as_seen(read_verified(server, family), subnet_id, None)
+        candidate = read_before(lambda: client.config_candidate(family))
+        options = _edit(
+            candidate,
+            lambda candidate: candidate.subnet_options(subnet.subnet_id, subnet.network),
+            missing=subnet_changed(subnet_id, None),
+        )
+    return SubnetOptionsTarget(subnet.declared_cidr, options)
 
 
 def _page_subnet(server: Server, family: Family, subnet_id: int) -> VerifiedSubnet:
@@ -922,12 +927,10 @@ def _send_candidate(
     return _persisted(client, family, application, diagnostics)
 
 
-def _edit(
-    candidate: CandidateConfiguration, edit: Callable[[CandidateConfiguration], None], missing: str | None
-) -> None:
-    """Run *edit* on the candidate. An error in the submitted rows propagates unchanged."""
+def _edit(candidate: CandidateConfiguration, edit: Callable[[CandidateConfiguration], T], missing: str | None) -> T:
+    """Run *edit* on the candidate and return its result. An error in the submitted rows propagates unchanged."""
     try:
-        edit(candidate)
+        return edit(candidate)
     except CandidateTargetMissing as exc:
         if missing is None:
             raise
