@@ -1281,7 +1281,7 @@ class TestSubnetAddFormSharedNetwork(SimpleTestCase):
         self.assertEqual(form.errors["shared_network"], ["Enter a Shared Network name, or choose none."])
 
     def test_a_page_without_the_shared_network_list_cannot_be_saved(self):
-        """A disabled select posts no name, so the form must not read the missing name as no Shared Network."""
+        """Without the Shared Network list the page offers no real choice, so the form refuses the save."""
         from netbox_kea.forms import SubnetAddForm, SubnetEditForm
 
         forms = (

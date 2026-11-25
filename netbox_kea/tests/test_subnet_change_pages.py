@@ -14,7 +14,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
-from netbox_kea import server_configuration, subnet_catalogue
+from netbox_kea import display_cache, server_configuration, subnet_catalogue
 from netbox_kea.read_failure import client_settings_message
 
 from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, _res_page, _subnet_list, stub_kea
@@ -149,6 +149,19 @@ def _posted(form) -> dict[str, str]:
             continue
         data[bound.html_name] = "True" if value is True else str(value)
     return data
+
+
+def _browser_data(response) -> dict[str, str]:
+    """Return the data that a browser posts for the form of *response*: a disabled field posts nothing."""
+    form = response.context["form"]
+    return {name: value for name, value in _page_data(response).items() if not form.fields[name].disabled}
+
+
+def _selected(response) -> str:
+    """Return the Shared Network that the selector of *response* posts: the selected option, else the first one."""
+    select = BeautifulSoup(response.content, "html.parser").select_one("select[name=shared_network]")
+    option = select.select_one("option[selected]") or select.select_one("option")
+    return option["value"]
 
 
 class _PageClient(_ViewTestBase):
@@ -322,7 +335,7 @@ _NETWORKS_NOT_LOADED = (
 
 
 class TestEditPageNeedsTheSharedNetworkList(_PageClient):
-    """A selector that the page cannot fill would post no Shared Network, so the edit page does not open without it."""
+    """A page without the Shared Network list offers only the held choice, and the edit page does not open without it."""
 
     _FAILED = {"result": 1, "text": "config-get failed"}
 
@@ -339,30 +352,48 @@ class TestEditPageNeedsTheSharedNetworkList(_PageClient):
         self.assertIn(_NETWORKS_NOT_LOADED, self._errors(response))
         self.assertIn("subnet4-get", kea.commands())
 
-    def test_a_save_without_the_selector_never_takes_the_subnet_out_of_its_shared_network(self):
-        """A save without the selector is refused, and the form shown again keeps the Shared Network of the page."""
-        daemon = self._daemon()
+    def _save_through_an_unavailable_list(self, daemon: SubnetDaemon, choice: str):
+        """Choose *choice*, then save through two forms shown again without the list and one after it is back."""
         url = _EDIT.url(self.server.pk)
         with stub_kea(daemon.responses()) as kea:
             page = self.client.get(url)
-            self.assertEqual(page.context["form"].initial["shared_network"], "alpha")
-            # A selector that the page showed disabled posts nothing, so the form says the list did not load.
-            data = {**_page_data(page), "shared_networks_complete": ""}
-            data.pop("shared_network")
-            refused = self.client.post(url, data)
-            self.assertEqual(refused.status_code, 200)
-            self.assertContains(refused, _NETWORKS_NOT_LOADED)
-            self.assertNotIn("subnet4-update", kea.commands())
-            # The display configuration is back, and the operator saves the form shown again.
-            selected = BeautifulSoup(refused.content, "html.parser").select_one(
-                "select[name=shared_network] option[selected]"
+            self.assertEqual(page.status_code, 200)
+            # The display configuration is gone for the next two forms shown again.
+            display_cache.rotate_configuration(self.server, 4)
+            daemon.script("config-get", self._FAILED, self._FAILED)
+            shown = self.client.post(
+                url, {**_browser_data(page), "shared_network": choice, "gateway": "not-an-address"}
             )
-            self.assertEqual(selected["value"], "alpha")
-            retried = self.client.post(url, _page_data(refused))
-        self.assertEqual(retried.status_code, 302)
-        self.assertIn("subnet4-update", kea.commands())
-        self.assertNotIn("network4-subnet-del", kea.commands())
+            self.assertEqual(_selected(shown), choice)
+            shown = self.client.post(url, {**_browser_data(shown), "gateway": ""})
+            self.assertContains(shown, _NETWORKS_NOT_LOADED)
+            self.assertEqual(_selected(shown), choice)
+            # The display configuration is back. The form posted without the list is refused once more.
+            shown = self.client.post(url, _browser_data(shown))
+            self.assertContains(shown, _NETWORKS_NOT_LOADED)
+            self.assertEqual(_selected(shown), choice)
+            self.assertNotIn("subnet4-update", kea.commands())
+            saved = self.client.post(url, _browser_data(shown))
+        self.assertEqual(saved.status_code, 302)
+        return kea.commands()
+
+    def test_a_save_without_the_list_never_takes_the_subnet_out_of_its_shared_network(self):
+        """The selector posts the Shared Network that the form holds, so the Subnet stays in it."""
+        daemon = self._daemon()
+        commands = self._save_through_an_unavailable_list(daemon, "alpha")
+        self.assertIn("subnet4-update", commands)
+        self.assertNotIn("network4-subnet-del", commands)
         self.assertEqual(daemon.members, {1: "alpha"})
+
+    def test_the_choice_of_the_operator_survives_a_form_shown_again_without_the_list(self):
+        """An explicit choice, the global pool included, is what the save sends."""
+        for choice, members in (("", {}), ("beta", {1: "beta"})):
+            with self.subTest(choice=choice):
+                self._fresh_client()
+                daemon = self._daemon()
+                commands = self._save_through_an_unavailable_list(daemon, choice)
+                self.assertIn("network4-subnet-del", commands)
+                self.assertEqual(daemon.members, members)
 
 
 class TestPoolAddWarningReadsTheCatalogueAfterTheWrite(_PageClient):

@@ -1201,7 +1201,7 @@ class PoolAddForm(forms.Form):
         return pool
 
 
-# The Shared Network selector of a page without the list posts no name, so neither the page nor its save goes on.
+# A page without the Shared Network list cannot offer a choice, so neither the edit page nor a save goes on.
 NETWORKS_NOT_LOADED = (
     "NetBox could not load the Shared Networks from Kea, so the Subnet form cannot be saved. "
     "Reload the page and try again."
@@ -1219,7 +1219,7 @@ class _SubnetBaseForm(forms.Form):
 
     # A free name: config_write checks that the Shared Network exists. The view sets the offered names.
     shared_network = forms.CharField(label="Shared Network", widget=forms.Select, required=False, strip=False)
-    # False: the page could not load the Shared Networks, so its disabled select posts no name.
+    # False: the page could not load the Shared Networks, so its select offers only the held name.
     shared_networks_complete = forms.BooleanField(widget=forms.HiddenInput, required=False)
     pools = _PoolLinesField(
         label="Pools",

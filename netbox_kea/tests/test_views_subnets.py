@@ -2280,16 +2280,14 @@ class TestSubnetAddMessages(_ViewTestBase):
         self.assertContains(response, '<option value="alpha">alpha</option>', html=True)
 
     def test_a_page_without_the_shared_network_list_adds_nothing(self):
-        """The page disables the select, and a browser posts no disabled field: the save must not pick no network."""
+        """The selector offers only the choice that the form holds, and the save without the list is refused."""
         daemon = self._daemon()
         daemon.script("config-get", _incomplete_networks())
         url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
-            self.assertTrue(page.context["form"].fields["shared_network"].disabled)
-            data = {**_page_data(page), "subnet": "10.2.0.0/24"}
-            data.pop("shared_network")
-            response = self.client.post(url, data)
+            self.assertEqual(page.context["form"].fields["shared_network"].widget.choices, [("", "(global pool)")])
+            response = self.client.post(url, {**_page_data(page), "subnet": "10.2.0.0/24"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _NETWORKS_NOT_LOADED)
         self.assertNotIn("subnet4-add", kea.commands())
@@ -2302,10 +2300,8 @@ class TestSubnetAddMessages(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             refused = self.client.post(url, {**_SUBNET_ADD_POST, "ntp_servers": "ntp.example.com"})
-            self.assertTrue(refused.context["form"].fields["shared_network"].disabled)
-            data = {**_page_data(refused), "ntp_servers": ""}
-            data.pop("shared_network")
-            response = self.client.post(url, data)
+            self.assertEqual(refused.context["form"].fields["shared_network"].widget.choices, [("", "(global pool)")])
+            response = self.client.post(url, {**_page_data(refused), "ntp_servers": ""})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, _NETWORKS_NOT_LOADED)
         self.assertNotIn("subnet4-add", kea.commands())
@@ -2641,7 +2637,7 @@ class TestSubnetEditMessages(_ViewTestBase):
             page = self.client.get(url)
             self.assertEqual(page.status_code, 302)
             self.assertIn(_NETWORKS_NOT_LOADED, [str(m) for m in get_messages(page.wsgi_request)])
-            # A page that a disabled selector left without a name: the save is refused too.
+            # A save from a form without the list is refused too.
             data = {
                 "subnet_cidr": "10.0.0.0/24",
                 **_shown("alpha"),
@@ -3536,17 +3532,19 @@ class TestGetInheritedOptionsParseOpts(_ViewTestBase):
 
 
 class TestSubnetAddNetworkChoicesError(_ViewTestBase):
-    """The add GET disables the Shared Network field and warns when config-get is unusable."""
+    """The add GET offers only the held Shared Network choice and warns when config-get is unusable."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
 
-    def test_invalid_shared_networks_disables_choices(self):
+    def test_invalid_shared_networks_offer_only_the_held_choice(self):
         config = {"result": 0, "arguments": {"Dhcp4": {"shared-networks": "invalid"}}}
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["form"].fields["shared_network"].disabled)
+        field = response.context["form"].fields["shared_network"]
+        self.assertFalse(field.disabled)
+        self.assertEqual(field.widget.choices, [("", "(global pool)")])
 
     def test_get_shows_warning_when_network_choices_fail(self):
         """GET must render 200 with a warning message when config-get fails (result 1 → KeaException)."""

@@ -332,20 +332,22 @@ def _offer_networks(
     form: forms.SubnetAddForm | forms.SubnetEditForm,
     snapshot: server_configuration.ServerConfigurationSnapshot,
 ) -> None:
-    """Offer the declared Shared Networks and the name that the form holds, or no choice when the list is incomplete."""
+    """Offer the declared Shared Networks and the name that the form holds, or only that name when the list is incomplete.
+
+    The selector is never disabled, so the browser always posts the held choice, the global pool included.
+    """
     field = form.fields["shared_network"]
     complete = snapshot.shared_networks_complete
+    held = form["shared_network"].value() or ""
     if complete:
         choices = [("", "(global pool)"), *((network.name, network.name) for network in snapshot.shared_networks)]
         # The snapshot can be stale, so the name that the operator chose stays selectable.
-        held = form["shared_network"].value() or ""
         if held and held not in {name for name, _ in choices}:
             choices.append((held, held))
         field.widget.choices = choices
     else:
         messages.warning(request, "Could not load shared networks from Kea. Retry later.")
-        field.widget.choices = [("", "(failed to load networks)")]
-        field.disabled = True
+        field.widget.choices = [(held, held or "(global pool)")]
     # A page shown again must say what it offers now, not what the page before it offered.
     if form.is_bound:
         data = QueryDict(mutable=True)
@@ -547,12 +549,6 @@ class ServerSubnetEditView(FamilyRouteMixin, ServerAccessMixin, generic.ObjectVi
         form: forms.SubnetEditForm,
     ) -> HttpResponse:
         """Show the submitted form again."""
-        if "shared_network" not in form.data:
-            # A disabled selector posted no name, so the form shown again keeps the Shared Network of the page.
-            data = QueryDict(mutable=True)
-            data.update(form.data)
-            data["shared_network"] = form.data.get("original_network", "")
-            form.data = data
         submitted = {name: value for name, value in form.data.items() if name in form.fields}
         configuration = server_configuration.display(server, self.dhcp_version)
         show_notices(request, notice(configuration))

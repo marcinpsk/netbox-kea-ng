@@ -605,7 +605,8 @@ and then updates the fields, because Kea refuses to add a Subnet that is already
 Network. It also takes the Shared Network that the page showed, and sends nothing while the
 scope shows another one; the page does not open when it cannot confirm the membership, or when its display
 configuration cannot list the Shared Networks (`forms.NETWORKS_NOT_LOADED`, also the refusal of a save without the
-list). A form shown again keeps the Shared Network of the page when a disabled selector posted none. When a step
+list). Without the list the selector is not disabled: it offers only the choice that the form holds, so a save posts
+it. When a step
 does not apply, the operation undoes the applied membership steps, newest first, each only while
 a fresh `subnet{v}-list` read shows the membership that the step set. The field update is the last step, so a
 rollback never undoes it. Both operations run their steps through `_run_steps` in `config_write`.
