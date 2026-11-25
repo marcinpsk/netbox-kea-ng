@@ -80,6 +80,7 @@ _PAGES = (
 
 _OPTIONS = tuple(page for page in _PAGES if page.name == "options")
 _UNSAFE = "Kea returned a configuration that NetBox cannot edit safely."
+_INVALID_OPTION: dict[str, Any] = {"option-data": [{}]}
 
 
 def _subnet(cidr: str = _SEEN, pools: tuple[str, ...] = (_POOL,), **keys: Any) -> dict[str, Any]:
@@ -129,7 +130,7 @@ _REFUSALS = (
         _UNSAFE,
         pages=_OPTIONS,
     ),
-    _Refusal("invalid target DHCP Option", _kea((_subnet(**{"option-data": [{}]}),)), _UNSAFE, pages=_OPTIONS),
+    _Refusal("invalid target DHCP Option", _kea((_subnet(**_INVALID_OPTION),)), _UNSAFE, pages=_OPTIONS),
     _Refusal(
         "missing Pool",
         _kea((_subnet(pools=()),)),
